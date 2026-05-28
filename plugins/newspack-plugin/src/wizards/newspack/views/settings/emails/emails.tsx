@@ -80,9 +80,7 @@ const Emails = () => {
 	// shape as api_get_email_settings()) so DataViews renders on first paint
 	// instead of waiting for the mount-time XHR.
 	const initial = emailSections.emails.initial;
-	const [ data, setData ] = useState< EmailItem[] >(
-		( initial?.newspack_emails as EmailItem[] | undefined ) ?? []
-	);
+	const [ data, setData ] = useState< EmailItem[] >( ( initial?.newspack_emails as EmailItem[] | undefined ) ?? [] );
 	const postType = initial?.post_type ?? emailSections.emails.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
 	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
@@ -161,13 +159,7 @@ const Emails = () => {
 		// Optimistic update so the row reflects the intent immediately;
 		// rollback on error.
 		const prev = data;
-		setData(
-			data.map( email =>
-				email.post_id === wcPostId
-					? { ...email, status: enabled ? 'publish' : 'draft' }
-					: email
-			)
-		);
+		setData( data.map( email => ( email.post_id === wcPostId ? { ...email, status: enabled ? 'publish' : 'draft' } : email ) ) );
 		wizardApiFetch< EmailSettings >(
 			{
 				path: `/newspack/v1/wizard/newspack-settings/emails/${ wcEmailId }/toggle`,
