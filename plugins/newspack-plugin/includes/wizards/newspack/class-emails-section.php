@@ -43,6 +43,99 @@ class Emails_Section extends Wizard_Section {
 				'permission_callback' => [ $this, 'api_permissions_check' ],
 			]
 		);
+
+		// Toggle endpoint for WooCommerce-source emails. Only registered
+		// when WC is loaded; without WC there are no WC configs to toggle.
+		if ( class_exists( 'WooCommerce' ) ) {
+			register_rest_route(
+				NEWSPACK_API_NAMESPACE,
+				'wizard/' . $this->wizard_slug . '/emails/(?P<id>[A-Za-z0-9_]+)/toggle',
+				[
+					'methods'             => WP_REST_Server::EDITABLE,
+					'callback'            => [ __CLASS__, 'api_toggle_wc_email' ],
+					'permission_callback' => [ $this, 'api_permissions_check' ],
+					'args'                => [
+						'id'      => [
+							'type'              => 'string',
+							'required'          => true,
+							'sanitize_callback' => 'sanitize_text_field',
+						],
+						'enabled' => [
+							'type'              => 'boolean',
+							'required'          => true,
+							'sanitize_callback' => 'rest_sanitize_boolean',
+						],
+					],
+				]
+			);
+		}
+	}
+
+	/**
+	 * Toggle a WooCommerce email's enabled state.
+	 *
+	 * Validates the email ID against the unified config set — only
+	 * WC-source configs registered by `WooCommerce_Emails::get_email_configs()`
+	 * are toggleable. Writes both the in-memory `WC_Email::$enabled`
+	 * property AND the underlying WC option, in that order:
+	 *
+	 *   1. `$wc_email->enabled = ...`  — in-memory state, defensive in
+	 *      case downstream code reads the cached mailer instance.
+	 *   2. `update_option( $wc_email->get_option_key(), ... )` — the
+	 *      authoritative source of truth. WP busts the options cache on
+	 *      update_option, so the subsequent `get_option()` call inside
+	 *      api_get_email_settings() (via serialize_wc_email_row) reads
+	 *      the new value in the same request.
+	 *
+	 * The response is a refreshed wizard payload — the toggled email's
+	 * status field reflects the new state.
+	 *
+	 * @param \WP_REST_Request $request REST request.
+	 * @return \WP_REST_Response|\WP_Error Refreshed settings payload or error.
+	 */
+	public static function api_toggle_wc_email( $request ) {
+		$wc_email_id = $request->get_param( 'id' );
+		$enabled     = (bool) $request->get_param( 'enabled' );
+
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return new \WP_Error(
+				'newspack_wc_not_active',
+				__( 'WooCommerce is not active.', 'newspack-plugin' ),
+				[ 'status' => 404 ]
+			);
+		}
+
+		$configs   = Emails::get_email_configs();
+		$wc_config = $configs[ $wc_email_id ] ?? null;
+		if (
+			! $wc_config
+			|| ( $wc_config['source'] ?? 'newspack' ) !== 'woocommerce'
+			|| empty( $wc_config['wc_email_instance'] )
+		) {
+			return new \WP_Error(
+				'newspack_wc_email_not_allowed',
+				__( 'WooCommerce email is not in the surfaced allowlist.', 'newspack-plugin' ),
+				[ 'status' => 404 ]
+			);
+		}
+
+		$wc_email = $wc_config['wc_email_instance'];
+
+		// In-memory write first — keeps the cached mailer instance's
+		// $enabled property in sync for any downstream code in the same
+		// request that reads it directly rather than going through the
+		// option.
+		$wc_email->enabled = $enabled ? 'yes' : 'no';
+
+		// Option write — authoritative source. serialize_wc_email_row()
+		// reads from this option, so the refreshed api_get_email_settings()
+		// response below reflects the toggled state.
+		$option_key         = $wc_email->get_option_key();
+		$options            = (array) get_option( $option_key, [] );
+		$options['enabled'] = $enabled ? 'yes' : 'no';
+		update_option( $option_key, $options );
+
+		return rest_ensure_response( self::api_get_email_settings() );
 	}
 
 	/**
