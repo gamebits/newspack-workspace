@@ -195,7 +195,7 @@ class Emails_Section extends Wizard_Section {
 	 *         recommended:         bool,
 	 *         chip:                'auth-account'|'reader-revenue',
 	 *         source:              'newspack'|'woocommerce',
-	 *         preview_post_id?:    ?int,
+	 *         preview_id?:         int|string|null,
 	 *     }>,
 	 *     post_type: string,
 	 * }
@@ -485,10 +485,20 @@ class Emails_Section extends Wizard_Section {
 			? 'yes' === $wc_options['enabled']
 			: $wc_email->is_enabled();
 
-		// Resolve once, pass to the edit-link helper — both fields use
-		// the same lookup (option read + class_exists + WC posts-manager
-		// DB query), so doing it twice per row would be wasteful.
-		$template_post_id = self::get_wc_email_template_post_id( $type );
+		// Resolve the block-editor template post ID once — used for both
+		// the edit-link (block-editor route when available) and the
+		// preview-id smart fallback below. Doing it twice per row would
+		// re-pay the option read + class_exists + WC posts-manager DB
+		// query for no gain.
+		$block_template_post_id = self::get_wc_email_template_post_id( $type );
+
+		// Smart-fallback preview identifier — if a block-editor template
+		// post exists for this WC email, emit its integer post ID so the
+		// preview endpoint can render via the block path. Otherwise emit
+		// the `wc:{id}` string so it routes to WC's classic render
+		// (Email_Preview::get_wc_classic_preview_html). Always one of
+		// integer | string — never null on WC rows.
+		$preview_id = $block_template_post_id ?? ( 'wc:' . $type );
 
 		return [
 			'type'                => $type,
@@ -496,7 +506,7 @@ class Emails_Section extends Wizard_Section {
 			'label'               => $config['label'] ?? '',
 			'description'         => $config['description'] ?? ( $config['trigger_description'] ?? '' ),
 			'post_id'             => 'wc:' . $type,
-			'edit_link'           => self::get_wc_email_edit_link( $template_post_id, $config['wc_email_class'] ?? get_class( $wc_email ) ),
+			'edit_link'           => self::get_wc_email_edit_link( $block_template_post_id, $config['wc_email_class'] ?? get_class( $wc_email ) ),
 			'subject'             => '',
 			'from_name'           => '',
 			'from_email'          => '',
@@ -508,7 +518,7 @@ class Emails_Section extends Wizard_Section {
 			'recommended'         => $config['recommended'] ?? false,
 			'chip'                => $config['chip'] ?? 'auth-account',
 			'source'              => 'woocommerce',
-			'preview_post_id'     => $template_post_id,
+			'preview_id'          => $preview_id,
 		];
 	}
 
@@ -518,13 +528,18 @@ class Emails_Section extends Wizard_Section {
 	 * Returns null when the WC block email editor is disabled, when the
 	 * WC posts-manager class isn't loaded, or when no template post
 	 * exists for this email ID. Self-contained — depends only on WC core
-	 * (the option and the posts-manager class). No Email_Preview machinery
-	 * involved; that ships with slice 2b.
+	 * (the option and the posts-manager class).
+	 *
+	 * Public because Email_Preview consumes it from outside this class
+	 * when validating the `wc:{id}` route path — needs to decide between
+	 * block-editor render (template post present) and classic render
+	 * (no template post). serialize_wc_email_row() also consumes it
+	 * to emit the smart-fallback preview_id field.
 	 *
 	 * @param string $wc_email_id The WC_Email instance ID.
 	 * @return ?int Template post ID, or null.
 	 */
-	private static function get_wc_email_template_post_id( string $wc_email_id ): ?int {
+	public static function get_wc_email_template_post_id( string $wc_email_id ): ?int {
 		if ( 'yes' !== get_option( 'woocommerce_feature_block_email_editor_enabled' ) ) {
 			return null;
 		}

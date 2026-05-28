@@ -404,12 +404,17 @@ class Email_Preview {
 	/**
 	 * Register the email-preview REST endpoint.
 	 *
+	 * Accepts two identifier shapes:
+	 * - Numeric post ID (Newspack emails, WC block-editor template posts).
+	 * - `wc:{email_id}` strings (WC classic-template emails with no
+	 *   block-editor template post — e.g. WC Subscriptions emails).
+	 *
 	 * @codeCoverageIgnore
 	 */
 	public static function register_rest_routes(): void {
 		register_rest_route(
 			NEWSPACK_API_NAMESPACE,
-			'wizard/newspack-settings/emails/(?P<id>\d+)/preview',
+			'wizard/newspack-settings/emails/(?P<id>\d+|wc:[\w-]+)/preview',
 			[
 				'methods'             => \WP_REST_Server::READABLE,
 				'callback'            => [ __CLASS__, 'api_get_preview' ],
@@ -417,8 +422,8 @@ class Email_Preview {
 				'args'                => [
 					'id' => [
 						'required'          => true,
-						'type'              => 'integer',
-						'sanitize_callback' => 'absint',
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
 					],
 				],
 			]
@@ -426,14 +431,78 @@ class Email_Preview {
 	}
 
 	/**
-	 * REST handler: return preview HTML for an email post.
+	 * REST handler: return preview HTML for an email.
+	 *
+	 * Handles two identifier shapes:
+	 * - Numeric: resolves to a post (newspack_rr_email or woo_email).
+	 * - `wc:{email_id}`: routes to a WC email render path. If a
+	 *   block-editor template post exists for the email, uses the block
+	 *   render (themed + cached); otherwise falls back to WC's legacy
+	 *   classic render.
 	 *
 	 * @param \WP_REST_Request $request Request object.
 	 *
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public static function api_get_preview( $request ) {
-		$post_id = (int) $request->get_param( 'id' );
+		$id = (string) $request->get_param( 'id' );
+
+		// WC classic / block-template path (e.g. "wc:customer_payment_retry").
+		if ( str_starts_with( $id, 'wc:' ) ) {
+			$wc_email_id = substr( $id, 3 );
+
+			// Validate against the unified email config schema before any
+			// resolution. The id must map to a config that's
+			// source='woocommerce' — otherwise reject. The slice 1
+			// unified-config refactor removed the parallel registry
+			// lookup the legacy implementation used; `get_email_configs()`
+			// is the single source of truth.
+			$configs   = Emails::get_email_configs();
+			$wc_config = $configs[ $wc_email_id ] ?? null;
+			if ( ! $wc_config || 'woocommerce' !== ( $wc_config['source'] ?? '' ) ) {
+				return new \WP_Error(
+					'newspack_email_preview_not_found',
+					__( 'Email not found.', 'newspack-plugin' ),
+					[ 'status' => 404 ]
+				);
+			}
+
+			// Prefer the block-editor render path when a template post
+			// exists (themed + cached). Otherwise fall back to WC's
+			// legacy classic render for emails without a template post
+			// (WC Subscriptions, etc.).
+			$template_post_id = Emails_Section::get_wc_email_template_post_id( $wc_email_id );
+			if ( $template_post_id ) {
+				$html = self::get_wc_preview_html( $template_post_id );
+			} else {
+				$html = self::get_wc_classic_preview_html( $wc_email_id );
+			}
+
+			if ( false === $html || empty( $html ) ) {
+				return new \WP_Error(
+					'newspack_email_preview_unavailable',
+					__( 'Email preview is unavailable.', 'newspack-plugin' ),
+					[ 'status' => 500 ]
+				);
+			}
+
+			return rest_ensure_response(
+				[
+					'html' => $html,
+					'id'   => $id,
+				]
+			);
+		}
+
+		// Numeric post ID path (Newspack emails, WC block-editor template posts).
+		$post_id = absint( $id );
+		if ( ! $post_id ) {
+			return new \WP_Error(
+				'newspack_email_preview_not_found',
+				__( 'Email not found.', 'newspack-plugin' ),
+				[ 'status' => 404 ]
+			);
+		}
 
 		$post = get_post( $post_id );
 		if ( ! $post ) {
@@ -470,6 +539,56 @@ class Email_Preview {
 				'id'   => $post_id,
 			]
 		);
+	}
+
+	/**
+	 * Render a WC classic-template email via WC's legacy EmailPreview.
+	 *
+	 * Used for WC emails that have no block-editor template post (e.g.
+	 * WC Subs emails). The rendered HTML uses `woocommerce_email_*` option
+	 * colors which a separate style-sync slice keeps in sync with the
+	 * site's brand.
+	 *
+	 * Not cached — classic render is fast (~30–50 ms) and
+	 * `woocommerce_email_*` options change without a post_modified
+	 * timestamp to key against. The lazy-loading IntersectionObserver in
+	 * the frontend limits concurrency in practice.
+	 *
+	 * @param string $wc_email_id The WC_Email ID (e.g. 'customer_payment_retry').
+	 *
+	 * @return string|false Rendered HTML, or false if unavailable.
+	 */
+	public static function get_wc_classic_preview_html( string $wc_email_id ) {
+		$preview_class = 'Automattic\\WooCommerce\\Internal\\Admin\\EmailPreview\\EmailPreview';
+
+		if ( ! class_exists( 'WooCommerce' ) || ! class_exists( $preview_class ) ) {
+			return false;
+		}
+
+		// Resolve email ID → class name via the mailer's registered emails.
+		$wc_email_class = null;
+		foreach ( \WC()->mailer()->get_emails() as $class_name => $instance ) {
+			if ( $instance->id === $wc_email_id ) {
+				$wc_email_class = $class_name;
+				break;
+			}
+		}
+		if ( ! $wc_email_class ) {
+			return false;
+		}
+
+		try {
+			$preview = $preview_class::instance();
+			$preview->set_email_type( $wc_email_class );
+			return $preview->render();
+		} catch ( \Throwable $e ) {
+			Logger::log(
+				"WC EmailPreview::render() failed for '$wc_email_id' ($wc_email_class): " . $e->getMessage(),
+				'NEWSPACK-EMAILS',
+				'warning'
+			);
+			return false;
+		}
 	}
 
 	/**
