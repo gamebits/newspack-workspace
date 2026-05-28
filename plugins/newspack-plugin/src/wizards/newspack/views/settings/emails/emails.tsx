@@ -9,6 +9,7 @@ import { __ } from '@wordpress/i18n';
 import { useState, useEffect, useCallback, useMemo, Fragment } from '@wordpress/element';
 import { filterSortAndPaginate } from '@wordpress/dataviews';
 import type { Action, Field, View } from '@wordpress/dataviews';
+import { Button } from '@wordpress/components';
 
 /**
  * Internal dependencies.
@@ -57,6 +58,14 @@ const DEFAULT_VIEW: View = {
 
 const PageHeading = () => <h1 className="screen-reader-text">{ __( 'Emails', 'newspack-plugin' ) }</h1>;
 
+// The chip bar is a strict two-way toggle — every email belongs to exactly
+// one of these two groups. Defaults to 'reader-revenue' on first load.
+type ChipValue = 'reader-revenue' | 'auth-account';
+const CHIPS: { value: ChipValue; label: string }[] = [
+	{ value: 'reader-revenue', label: __( 'Reader revenue', 'newspack-plugin' ) },
+	{ value: 'auth-account', label: __( 'Authentication & account', 'newspack-plugin' ) },
+];
+
 const Emails = () => {
 	const emailSections = window.newspackSettings.emails.sections;
 	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSections.emails.dependencies.newspackNewsletters ) );
@@ -68,6 +77,14 @@ const Emails = () => {
 	const [ data, setData ] = useState< EmailItem[] >( initial?.newspack_emails ?? [] );
 	const postType = initial?.post_type ?? emailSections.emails.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
+	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
+
+	const selectChip = ( chip: ChipValue ) => {
+		setActiveChip( chip );
+		// Reset search + pagination on chip switch so the user sees the new
+		// group from the top with no leftover query.
+		setView( prev => ( { ...prev, search: '', page: 1 } ) );
+	};
 
 	const { wizardApiFetch, isFetching, errorMessage, resetError } = useWizardApiFetch( 'newspack-settings/emails' );
 
@@ -272,7 +289,14 @@ const Emails = () => {
 		},
 	];
 
-	const { data: processedData, paginationInfo } = useMemo( () => filterSortAndPaginate( data, view, fields ), [ data, view, fields ] );
+	// Strict 2-way chip filter — only rows matching activeChip pass through
+	// to DataViews. There's no "All" view by design (every email belongs to
+	// exactly one chip group).
+	const chipFilteredData = useMemo( () => data.filter( item => item.chip === activeChip ), [ data, activeChip ] );
+	const { data: processedData, paginationInfo } = useMemo(
+		() => filterSortAndPaginate( chipFilteredData, view, fields ),
+		[ chipFilteredData, view, fields ]
+	);
 
 	if ( false === pluginsReady ) {
 		return (
@@ -303,6 +327,19 @@ const Emails = () => {
 		<Fragment>
 			<PageHeading />
 			{ errorMessage && <Notice isError noticeText={ errorMessage } /> }
+			<div className="newspack-emails__chips" role="group" aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }>
+				{ CHIPS.map( chip => (
+					<Button
+						key={ chip.value }
+						variant={ activeChip === chip.value ? 'primary' : 'secondary' }
+						aria-pressed={ activeChip === chip.value }
+						onClick={ () => selectChip( chip.value ) }
+						className="newspack-emails__chip"
+					>
+						{ chip.label }
+					</Button>
+				) ) }
+			</div>
 			<DataViews
 				className="newspack-emails"
 				data={ processedData }

@@ -11,6 +11,25 @@
 	padding-right: var(--newspack-wizard-section-space, 24px);
 }
 
+// Chip filter bar above the DataViews grid. Two-way toggle between
+// 'Reader revenue' and 'Authentication & account' — every email belongs
+// to exactly one chip group, so there's no "All" view.
+.newspack-emails__chips {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 16px;
+
+	// Nested for specificity over WP Button defaults — without the
+	// `.components-button` chain, the pill shape and padding lose to
+	// WP's default button styling.
+	.newspack-emails__chip.components-button {
+		border-radius: 20px;
+		padding: 4px 16px;
+		font-size: 13px;
+		line-height: 1.4;
+	}
+}
+
 // DataViews search/filter/icon alignment.
 // The Settings emails section is registered with `fullWidth: true` in
 // sections.tsx, which adds `.newspack-wizard__content--full-width` to the
