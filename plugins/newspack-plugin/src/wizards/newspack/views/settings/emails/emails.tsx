@@ -20,7 +20,11 @@ import './emails.scss';
 
 interface EmailItem {
 	label: string;
-	post_id: number;
+	// Newspack-source rows carry an integer post ID; WC-source rows carry
+	// a string in the form `wc:{wc_email_id}` (e.g. `wc:customer_payment_retry`).
+	// The activate/deactivate action callbacks branch on `typeof` to route
+	// the write through the correct endpoint.
+	post_id: number | string;
 	edit_link: string;
 	status: string;
 	type: string;
@@ -122,6 +126,25 @@ const Emails = () => {
 		);
 	};
 
+	// WooCommerce-source rows have a string post_id `wc:{wc_email_id}` —
+	// routed through the slice 2a toggle endpoint, which writes the WC
+	// option directly. Uses useWizardApiFetch for loading-state and
+	// error consistency with the other mutations in this view.
+	const toggleWcEmail = ( wcPostId: string, enabled: boolean ) => {
+		resetError();
+		const wcEmailId = wcPostId.replace( /^wc:/, '' );
+		wizardApiFetch(
+			{
+				path: `/newspack/v1/wizard/newspack-settings/emails/${ wcEmailId }/toggle`,
+				method: 'POST',
+				data: { enabled },
+			},
+			{
+				onSuccess: () => fetchData(),
+			}
+		);
+	};
+
 	const resetEmail = ( postId: number ) => {
 		resetError();
 		// @todo NPPD-1532 Move reset handler to class-emails-section.php so it
@@ -207,9 +230,16 @@ const Emails = () => {
 		{
 			id: 'deactivate',
 			label: __( 'Deactivate', 'newspack-plugin' ),
+			// Eligibility is category- and status-based only — no source guard.
+			// The callback routes by post_id type to pick the right endpoint.
 			isEligible: ( item: EmailItem ) => item.category !== 'reader-activation' && item.status === 'publish',
 			callback: ( items: EmailItem[] ) => {
-				updateStatus( items[ 0 ].post_id, 'draft' );
+				const item = items[ 0 ];
+				if ( typeof item.post_id === 'string' ) {
+					toggleWcEmail( item.post_id, false );
+				} else {
+					updateStatus( item.post_id, 'draft' );
+				}
 			},
 		},
 		{
@@ -217,17 +247,26 @@ const Emails = () => {
 			label: __( 'Activate', 'newspack-plugin' ),
 			isEligible: ( item: EmailItem ) => item.category !== 'reader-activation' && item.status !== 'publish',
 			callback: ( items: EmailItem[] ) => {
-				updateStatus( items[ 0 ].post_id, 'publish' );
+				const item = items[ 0 ];
+				if ( typeof item.post_id === 'string' ) {
+					toggleWcEmail( item.post_id, true );
+				} else {
+					updateStatus( item.post_id, 'publish' );
+				}
 			},
 		},
 		{
 			id: 'reset',
 			label: __( 'Reset', 'newspack-plugin' ),
 			isDestructive: true,
+			// Source guard on reset only — WC emails aren't customized
+			// through the post editor, so reset has no meaning for them.
 			isEligible: ( item: EmailItem ) => item.source === 'newspack',
 			callback: ( items: EmailItem[] ) => {
 				if ( utils.confirmAction( __( 'Are you sure you want to reset the contents of this email?', 'newspack-plugin' ) ) ) {
-					resetEmail( items[ 0 ].post_id );
+					// Reset only fires for Newspack-source rows (per isEligible),
+					// which always carry an integer post_id.
+					resetEmail( items[ 0 ].post_id as number );
 				}
 			},
 		},
