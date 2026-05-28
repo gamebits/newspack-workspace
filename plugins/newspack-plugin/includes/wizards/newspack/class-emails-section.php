@@ -32,6 +32,28 @@ class Emails_Section extends Wizard_Section {
 	protected $wizard_slug = 'newspack-settings';
 
 	/**
+	 * Whether WooCommerce is active.
+	 *
+	 * Mockable in tests via the `newspack_woocommerce_active` filter. The
+	 * filter exists because a bare `class_exists( 'WooCommerce' )` check
+	 * couples test isolation to whether some sibling test file declared a
+	 * global `class WooCommerce {}` shim — i.e., suite-order-dependent.
+	 * Tests `add_filter( 'newspack_woocommerce_active', '__return_true' )`
+	 * in their setUp; production code paths see the unfiltered default.
+	 *
+	 * @return bool
+	 */
+	private static function is_woocommerce_active(): bool {
+		/**
+		 * Filters whether WooCommerce is considered active for the
+		 * unified emails wizard. Default is `class_exists( 'WooCommerce' )`.
+		 *
+		 * @param bool $active Whether WC is active.
+		 */
+		return (bool) apply_filters( 'newspack_woocommerce_active', class_exists( 'WooCommerce' ) );
+	}
+
+	/**
 	 * Register the endpoints needed for the wizard screens.
 	 */
 	public function register_rest_routes() {
@@ -47,7 +69,7 @@ class Emails_Section extends Wizard_Section {
 
 		// Toggle endpoint for WooCommerce-source emails. Only registered
 		// when WC is loaded; without WC there are no WC configs to toggle.
-		if ( class_exists( 'WooCommerce' ) ) {
+		if ( self::is_woocommerce_active() ) {
 			register_rest_route(
 				NEWSPACK_API_NAMESPACE,
 				'wizard/' . $this->wizard_slug . '/emails/(?P<id>[A-Za-z0-9_]+)/toggle',
@@ -98,7 +120,7 @@ class Emails_Section extends Wizard_Section {
 		$wc_email_id = $request->get_param( 'id' );
 		$enabled     = (bool) $request->get_param( 'enabled' );
 
-		if ( ! class_exists( 'WooCommerce' ) ) {
+		if ( ! self::is_woocommerce_active() ) {
 			return new \WP_Error(
 				'newspack_wc_not_active',
 				__( 'WooCommerce is not active.', 'newspack-plugin' ),
@@ -303,25 +325,31 @@ class Emails_Section extends Wizard_Section {
 	const FIRST_RUN_OPTION = 'newspack_unified_emails_wc_first_run';
 
 	/**
-	 * On first encounter of a recommended WC email, enable it. Idempotent
-	 * per config key — once a key is in the FIRST_RUN_OPTION list, this
-	 * method never touches that email again. Critically, this means if
-	 * the user manually disables an auto-enabled email after first-run,
-	 * subsequent wizard loads do NOT re-enable it.
+	 * On first encounter of a recommended WC email, enable it — but only
+	 * if the publisher hasn't already recorded an explicit decision for
+	 * that email. Idempotent per config key — once a key is in the
+	 * FIRST_RUN_OPTION list, this method never reconsiders it. The slug
+	 * is added to FIRST_RUN_OPTION regardless of whether we wrote, so
+	 * the "considered once" semantics hold whether or not the publisher
+	 * already had a decision in place.
 	 *
-	 * Writes the email's enabled state through the same path as the
-	 * toggle endpoint (in-memory + option) for source-of-truth
-	 * consistency.
+	 * The gate is `! isset( $options['enabled'] )` — we only auto-enable
+	 * when the email's WC settings option doesn't carry an `enabled` key
+	 * at all (publisher has never saved that email's WC settings form).
+	 * An explicit `'no'` is a deliberate publisher decision; preserve it.
 	 *
 	 * Special case: `customer_notification_auto_renewal` requires the WC
 	 * Subscriptions master switch
 	 * (`woocommerce_subscriptions_customer_notifications_enabled`) to
-	 * also be enabled, otherwise the email never fires regardless of its
-	 * own enabled flag. Enabled here when the auto-renewal email itself
-	 * is first processed.
+	 * also be on — otherwise the email never fires regardless of its own
+	 * flag. We enable the master switch only when the option doesn't
+	 * exist in the DB (`false === get_option(..., false)`). A publisher
+	 * who explicitly disabled it is making a site-wide policy choice
+	 * about all WCS customer notifications, not just this one email; we
+	 * do not silently reverse that.
 	 */
 	private static function maybe_first_run_enable_wc_emails(): void {
-		if ( ! class_exists( 'WooCommerce' ) ) {
+		if ( ! self::is_woocommerce_active() ) {
 			return;
 		}
 
@@ -346,26 +374,32 @@ class Emails_Section extends Wizard_Section {
 				continue;
 			}
 
-			// Read current state from the option (authoritative — same as
-			// serialize_wc_email_row and the toggle endpoint). $wc_email->enabled
-			// is a snapshot from WC boot and can be stale.
-			$option_key      = $wc_email->get_option_key();
-			$options         = (array) get_option( $option_key, [] );
-			$current_enabled = $options['enabled'] ?? $wc_email->enabled;
+			$option_key = $wc_email->get_option_key();
+			$options    = (array) get_option( $option_key, [] );
 
-			if ( 'yes' !== $current_enabled ) {
+			// Only write when the publisher hasn't recorded a decision
+			// yet. An explicit 'no' is preserved.
+			if ( ! isset( $options['enabled'] ) ) {
 				$wc_email->enabled  = 'yes';
 				$options['enabled'] = 'yes';
 				update_option( $option_key, $options );
 			}
 
-			// Auto-renewal notice also needs the WCS master switch on.
-			if ( 'customer_notification_auto_renewal' === $type
-				&& 'yes' !== get_option( 'woocommerce_subscriptions_customer_notifications_enabled' )
+			// WCS master switch: enable only when not present in the DB.
+			// `get_option(..., false)` returns the default `false` only
+			// when the option row doesn't exist — an explicit `'no'`
+			// returns `'no'` and is preserved.
+			if (
+				'customer_notification_auto_renewal' === $type
+				&& false === get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false )
 			) {
 				update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'yes' );
 			}
 
+			// Mark as processed regardless of whether we wrote — once we
+			// considered the slug, we don't reconsider it. Without this,
+			// a publisher with explicit 'no' would have us re-evaluate
+			// (and skip) the slug on every wizard load.
 			$processed[] = $type;
 			$changed     = true;
 		}

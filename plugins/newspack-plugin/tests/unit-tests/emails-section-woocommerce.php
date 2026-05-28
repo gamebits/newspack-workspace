@@ -1,4 +1,4 @@
-<?php // phpcs:disable WordPress.Files.FileName.InvalidClassFileName, Generic.Files.OneObjectStructurePerFile.MultipleFound, Squiz.Commenting.ClassComment.WrongStyle, Squiz.Commenting.InlineComment.InvalidEndChar, Squiz.Commenting.VariableComment.Missing, Squiz.Commenting.FunctionComment.Missing -- Test file intentionally declares a WooCommerce class shim and a WC_Email-like stub alongside the main test class; precedent: tests/unit-tests/reader-registration-endpoint.php and tests/mocks/*.
+<?php // phpcs:disable WordPress.Files.FileName.InvalidClassFileName, Generic.Files.OneObjectStructurePerFile.MultipleFound, Squiz.Commenting.ClassComment.WrongStyle, Squiz.Commenting.InlineComment.InvalidEndChar, Squiz.Commenting.VariableComment.Missing, Squiz.Commenting.FunctionComment.Missing -- Test file intentionally declares a WC_Email-like stub alongside the main test class; precedent: tests/unit-tests/reader-registration-endpoint.php and tests/mocks/*.
 /**
  * Slice 2a (NPPD-1527) — WooCommerce email surfacing.
  *
@@ -13,27 +13,21 @@
  *   - `Emails_Section::api_toggle_wc_email()` — writes the WC option AND
  *     the same-request response reflects the new state (the staleness
  *     fix), with 404 rejection for unknown IDs and non-WC sources.
- *   - `Emails_Section::maybe_first_run_enable_wc_emails()` — idempotency
- *     keyed on the processed list (not current state, so the
- *     user-disabled-after-first-run case is honored), skips
- *     `recommended=false`, and flips the WCS master switch when
- *     `customer_notification_auto_renewal` first runs.
+ *   - `Emails_Section::maybe_first_run_enable_wc_emails()` — only writes
+ *     when the publisher hasn't recorded a decision yet (preserves
+ *     explicit 'no'); WCS master switch only flipped when never set;
+ *     idempotent via the FIRST_RUN_OPTION processed-keys list whether
+ *     or not we wrote.
  *
- * Setup: declares a `WooCommerce` class shim (the only globally-visible
- * side effect — the real one doesn't exist in this test env, and the
- * guards in Emails_Section won't fire without it) and a minimal
- * `WC_Email`-like stub. Stub configs are injected via the
- * `newspack_email_configs` filter and removed in tearDown so they
- * don't leak across tests.
+ * Setup: declares a minimal `WC_Email`-like stub. WooCommerce-active
+ * tests opt-in via the `newspack_woocommerce_active` filter (added in
+ * set_up, removed in tear_down) — no global `class WooCommerce {}` shim,
+ * so suite order doesn't matter. Stub configs are injected via the
+ * `newspack_email_configs` filter; instances are primed onto the
+ * WooCommerce_Emails by-id cache via the test-only helpers there.
  *
  * @package Newspack\Tests
  */
-
-if ( ! class_exists( 'WooCommerce' ) ) {
-	// Shim — only declared when real WC isn't loaded. Empty body is fine;
-	// Emails_Section guards use `class_exists('WooCommerce')` as a boolean.
-	class WooCommerce {}
-}
 
 /**
  * Minimal WC_Email-like stub. Mimics the three points of contact the
@@ -79,12 +73,26 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	private $filter_callbacks = [];
 
 	/**
-	 * Remove any registered filter callbacks AND reset the
-	 * WooCommerce_Emails by-id cache so primed stubs don't leak across
-	 * tests. Option writes are rolled back by the WP test framework's
-	 * per-test transaction.
+	 * Make `Emails_Section::is_woocommerce_active()` return true for the
+	 * duration of each test. Without a global `class WooCommerce {}`
+	 * shim (which would leak into other test files in this PHPUnit
+	 * process), the source's `class_exists('WooCommerce')` returns
+	 * false in this env — the filter is how tests opt into the
+	 * WC-active code paths cleanly, per-test.
+	 */
+	public function set_up() {
+		parent::set_up();
+		add_filter( 'newspack_woocommerce_active', '__return_true' );
+	}
+
+	/**
+	 * Remove the WC-active filter, the registered `newspack_email_configs`
+	 * callbacks, and reset the WooCommerce_Emails by-id cache so primed
+	 * stubs don't leak across tests. Option writes are rolled back by
+	 * the WP test framework's per-test transaction.
 	 */
 	public function tear_down() {
+		remove_filter( 'newspack_woocommerce_active', '__return_true' );
 		foreach ( $this->filter_callbacks as $callback ) {
 			remove_filter( 'newspack_email_configs', $callback );
 		}
@@ -483,19 +491,25 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A recommended, unprocessed WC email is enabled on its first
-	 * encounter AND added to the processed list, so the next call is a
-	 * no-op (idempotency).
+	 * A recommended, unprocessed WC email whose settings option doesn't
+	 * exist in the DB yet gets enabled on first encounter AND added to
+	 * the processed list.
+	 *
+	 * "Option doesn't exist" = publisher has never opened the WC settings
+	 * form for this email, so they have no recorded preference; the
+	 * recommended-default kicks in.
 	 */
-	public function test_first_run_enables_recommended_unprocessed() {
+	public function test_first_run_enables_when_option_unset() {
 		$wc_email = $this->register_stub_wc_config(
 			new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' )
 		);
+		// Ensure the WC settings option doesn't exist in the DB.
+		delete_option( $wc_email->get_option_key() );
 
 		Emails_Section::api_get_email_settings();
 
 		$options = (array) get_option( $wc_email->get_option_key(), [] );
-		$this->assertSame( 'yes', $options['enabled'] );
+		$this->assertSame( 'yes', $options['enabled'], 'Unset option should get enabled=yes on first-run.' );
 		$this->assertSame( 'yes', $wc_email->enabled, 'In-memory enabled should be flipped too.' );
 
 		$processed = (array) get_option( Emails_Section::FIRST_RUN_OPTION, [] );
@@ -503,25 +517,57 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Publisher's explicit `'no'` is preserved on first-run. The slug is
+	 * still added to the processed list — "considered once" semantics
+	 * apply whether or not we wrote.
+	 */
+	public function test_first_run_preserves_explicit_no() {
+		$wc_email = $this->register_stub_wc_config(
+			new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' )
+		);
+		// Publisher has explicitly disabled this email via WC settings.
+		update_option( $wc_email->get_option_key(), [ 'enabled' => 'no' ] );
+
+		Emails_Section::api_get_email_settings();
+
+		$options = (array) get_option( $wc_email->get_option_key(), [] );
+		$this->assertSame(
+			'no',
+			$options['enabled'],
+			'Publisher\'s explicit enabled=no MUST NOT be overwritten on first-run.'
+		);
+
+		$processed = (array) get_option( Emails_Section::FIRST_RUN_OPTION, [] );
+		$this->assertContains(
+			$wc_email->id,
+			$processed,
+			'Slug must still be added to processed list — considered-once semantics apply whether or not we wrote.'
+		);
+	}
+
+	/**
 	 * Special case: `customer_notification_auto_renewal` requires the
 	 * WC Subscriptions master switch
 	 * (`woocommerce_subscriptions_customer_notifications_enabled`) on —
 	 * otherwise the email never fires regardless of its own enabled
-	 * flag. First-run flips both.
+	 * flag. When the master switch option doesn't exist in the DB,
+	 * first-run sets it to `'yes'`.
 	 */
-	public function test_first_run_enables_wcs_master_switch_for_auto_renewal() {
-		update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'no' );
+	public function test_first_run_enables_wcs_master_switch_when_unset() {
+		// Ensure the master switch option doesn't exist.
+		delete_option( 'woocommerce_subscriptions_customer_notifications_enabled' );
 
 		$wc_email = $this->register_stub_wc_config(
 			new Newspack_Test_Stub_WC_Email( 'customer_notification_auto_renewal', 'no' )
 		);
+		delete_option( $wc_email->get_option_key() );
 
 		Emails_Section::api_get_email_settings();
 
 		$this->assertSame(
 			'yes',
 			get_option( 'woocommerce_subscriptions_customer_notifications_enabled' ),
-			'WCS master switch should be enabled by the auto-renewal first-run.'
+			'WCS master switch should be set to yes when previously unset.'
 		);
 		$this->assertContains(
 			$wc_email->id,
@@ -530,22 +576,58 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Non-auto-renewal first-runs do NOT flip the WCS master switch —
-	 * the special case is scoped to that one id.
+	 * Publisher's explicit `'no'` on the WCS master switch is a
+	 * site-wide policy choice — first-run preserves it.
+	 *
+	 * The master switch controls ALL WC Subscriptions customer
+	 * notifications, not just the renewal reminder. A publisher who
+	 * turned it off did so intentionally; we don't silently reverse
+	 * that decision.
 	 */
-	public function test_first_run_does_not_flip_master_switch_for_other_emails() {
+	public function test_first_run_preserves_wcs_master_switch_disabled() {
+		// Publisher has explicitly disabled the WCS master switch.
 		update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'no' );
 
-		$this->register_stub_wc_config(
-			new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' )
+		$wc_email = $this->register_stub_wc_config(
+			new Newspack_Test_Stub_WC_Email( 'customer_notification_auto_renewal', 'no' )
 		);
+		delete_option( $wc_email->get_option_key() );
 
 		Emails_Section::api_get_email_settings();
 
 		$this->assertSame(
 			'no',
 			get_option( 'woocommerce_subscriptions_customer_notifications_enabled' ),
-			'Master switch should not be touched by non-auto-renewal first-runs.'
+			'Publisher\'s explicit master-switch=no MUST NOT be overwritten on first-run.'
+		);
+		$this->assertContains(
+			$wc_email->id,
+			(array) get_option( Emails_Section::FIRST_RUN_OPTION, [] ),
+			'Slug must still be added to processed list.'
+		);
+	}
+
+	/**
+	 * Non-auto-renewal first-runs do NOT touch the WCS master switch —
+	 * the special case is scoped to that one id.
+	 *
+	 * Sets the master switch to unset so a wrongful firing of the WCS
+	 * branch would change the option value. Then registers a
+	 * non-auto-renewal email and verifies the option stays absent.
+	 */
+	public function test_first_run_does_not_flip_master_switch_for_other_emails() {
+		delete_option( 'woocommerce_subscriptions_customer_notifications_enabled' );
+
+		$wc_email = $this->register_stub_wc_config(
+			new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' )
+		);
+		delete_option( $wc_email->get_option_key() );
+
+		Emails_Section::api_get_email_settings();
+
+		$this->assertFalse(
+			get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false ),
+			'Master switch should remain absent for non-auto-renewal first-runs.'
 		);
 	}
 

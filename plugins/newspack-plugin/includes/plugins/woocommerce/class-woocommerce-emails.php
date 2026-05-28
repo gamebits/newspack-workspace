@@ -174,11 +174,14 @@ class WooCommerce_Emails {
 			return $configs;
 		}
 		foreach ( self::surfaced_wc_emails() as $id => $meta ) {
-			if ( ! empty( $meta['plugin_dependency'] ) ) {
-				$plugin_file = $meta['plugin_dependency'] . '/' . $meta['plugin_dependency'] . '.php';
-				if ( ! \Newspack\is_plugin_active( $plugin_file ) ) {
-					continue;
-				}
+			// Gate on whether the WC_Email subclass is loaded rather than
+			// looking up the plugin file in `active_plugins` — the latter
+			// misses network-activated plugins on multisite, where the
+			// `plugin_dependency` plugin (e.g. WooCommerce Subscriptions)
+			// is listed in `active_sitewide_plugins` instead. The class
+			// presence check works regardless of activation scope.
+			if ( ! class_exists( $meta['class'] ) ) {
+				continue;
 			}
 			$configs[ $id ] = [
 				'name'                => $id,
