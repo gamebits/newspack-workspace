@@ -86,6 +86,17 @@ jest.mock(
 		}
 );
 
+// Mock EmailPreview so we don't run its IntersectionObserver +
+// apiFetch in every emails test. The stub exposes the postId prop
+// via a data-attribute so the preview-field tests can assert which
+// id reached the component for each row.
+jest.mock( './email-preview', () => ( {
+	__esModule: true,
+	default: function MockEmailPreview( { postId } ) {
+		return <div data-testid="email-preview-stub" data-post-id={ String( postId ) } />;
+	},
+} ) );
+
 // Fixtures span both chips and both sources so the chip-filter and
 // type-routing tests have meaningful data on either side of the toggle.
 const mockEmails = [
@@ -155,10 +166,12 @@ const mockEmails = [
 		chip: 'reader-revenue',
 	},
 	// WC-source, reader-revenue chip, admin recipient, currently enabled —
-	// exercises the deactivate→toggleWcEmail route (string post_id).
+	// exercises the deactivate→toggleWcEmail route (string post_id) AND
+	// the BLOCK-template preview path (preview_id is an integer post ID).
 	{
 		label: 'New order',
 		post_id: 'wc:new_order',
+		preview_id: 999,
 		edit_link: '/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_new_order',
 		status: 'publish',
 		type: 'new_order',
@@ -170,10 +183,12 @@ const mockEmails = [
 		chip: 'reader-revenue',
 	},
 	// WC-source, auth-account chip, currently disabled — exercises the
-	// activate→toggleWcEmail route (string post_id).
+	// activate→toggleWcEmail route (string post_id) AND the CLASSIC
+	// preview path (preview_id is a wc:{id} string, no block template).
 	{
 		label: 'New account',
 		post_id: 'wc:customer_new_account',
+		preview_id: 'wc:customer_new_account',
 		edit_link: '/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_customer_new_account',
 		status: 'draft',
 		type: 'customer_new_account',
@@ -621,6 +636,59 @@ describe( 'Emails', () => {
 		} );
 		await waitFor( () => {
 			expect( screen.getByRole( 'button', { name: 'Reader revenue' } ).getAttribute( 'aria-pressed' ) ).toBe( 'true' );
+		} );
+	} );
+
+	// Slice 2b.5 — DataViews preview field. The render uses a smart
+	// fallback: `item.preview_id ?? item.post_id` (with a typeof guard
+	// rejecting wc:strings as a fallback target). Newspack rows have no
+	// preview_id, so they fall back to their integer post_id. WC rows
+	// emit preview_id directly — integer for block-template emails,
+	// `wc:{id}` string for classic-template emails.
+
+	it( 'preview field renders an anchor with aria-label for each row', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		// Default chip = reader-revenue: receipt, cancellation, welcome,
+		// new order. Each row's preview field renders an anchor with an
+		// aria-label of the form "Edit {label}".
+		expect( screen.getByRole( 'link', { name: 'Edit Payment receipt' } ) ).toBeInTheDocument();
+		expect( screen.getByRole( 'link', { name: 'Edit Cancellation confirmation' } ) ).toBeInTheDocument();
+		expect( screen.getByRole( 'link', { name: 'Edit Welcome email' } ) ).toBeInTheDocument();
+		expect( screen.getByRole( 'link', { name: 'Edit New order' } ) ).toBeInTheDocument();
+	} );
+
+	it( 'preview field passes the right id to EmailPreview for each render path', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		const previews = screen.getAllByTestId( 'email-preview-stub' );
+		const ids = previews.map( el => el.getAttribute( 'data-post-id' ) );
+
+		// Default chip = reader-revenue. Expected ids on this chip:
+		// - Newspack rows fall back to integer post_id: receipt=1,
+		//   cancellation=2, welcome=5
+		// - WC block-template row uses preview_id (integer): new_order=999
+		expect( ids ).toEqual( expect.arrayContaining( [ '1', '2', '5', '999' ] ) );
+
+		// Switch to auth-account chip so the WC classic row surfaces.
+		fireEvent.click( screen.getByRole( 'button', { name: 'Authentication & account' } ) );
+
+		await waitFor( () => {
+			const aaPreviews = screen.getAllByTestId( 'email-preview-stub' );
+			const aaIds = aaPreviews.map( el => el.getAttribute( 'data-post-id' ) );
+			// Newspack RA fallback: verification=3, delete-account=4.
+			// WC classic row uses preview_id (string): customer_new_account.
+			expect( aaIds ).toEqual( expect.arrayContaining( [ '3', '4', 'wc:customer_new_account' ] ) );
 		} );
 	} );
 } );
