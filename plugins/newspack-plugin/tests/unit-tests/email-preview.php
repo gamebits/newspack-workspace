@@ -46,6 +46,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 			return $types;
 		};
 		add_filter( 'newspack_email_configs', $this->config_filter_callback );
+		\Newspack\Emails::reset_email_configs_cache();
 	}
 
 	/**
@@ -53,6 +54,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 	 */
 	public function tear_down() {
 		remove_filter( 'newspack_email_configs', $this->config_filter_callback );
+		\Newspack\Emails::reset_email_configs_cache();
 		parent::tear_down();
 	}
 
@@ -334,6 +336,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 			return $configs;
 		};
 		add_filter( 'newspack_email_configs', $callback );
+		\Newspack\Emails::reset_email_configs_cache();
 
 		$request = new WP_REST_Request( 'GET', '/newspack/v1/wizard/newspack-settings/emails/wc:fake_wc_id/preview' );
 		$request->set_param( 'id', 'wc:fake_wc_id' );
@@ -341,6 +344,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 		$response = Email_Preview::api_get_preview( $request );
 
 		remove_filter( 'newspack_email_configs', $callback );
+		\Newspack\Emails::reset_email_configs_cache();
 
 		self::assertInstanceOf( 'WP_Error', $response );
 		self::assertEquals( 'newspack_email_preview_not_found', $response->get_error_code() );
@@ -381,6 +385,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 			return $configs;
 		};
 		add_filter( 'newspack_email_configs', $callback );
+		\Newspack\Emails::reset_email_configs_cache();
 
 		$request = new WP_REST_Request( 'GET', '/newspack/v1/wizard/newspack-settings/emails/wc:' . $wc_id . '/preview' );
 		$request->set_param( 'id', 'wc:' . $wc_id );
@@ -388,6 +393,7 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 		$response = Email_Preview::api_get_preview( $request );
 
 		remove_filter( 'newspack_email_configs', $callback );
+		\Newspack\Emails::reset_email_configs_cache();
 
 		self::assertInstanceOf( 'WP_Error', $response );
 		self::assertEquals( 'newspack_email_preview_unavailable', $response->get_error_code() );
