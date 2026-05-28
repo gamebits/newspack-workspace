@@ -348,16 +348,22 @@ const Emails = () => {
 		},
 	];
 
-	// Strict 2-way chip filter — only rows matching activeChip pass through
-	// to DataViews. There's no "All" view by design (every email belongs to
-	// exactly one chip group).
-	const chipFilteredData = useMemo(
-		() => data.filter( ( item ) => item.chip === activeChip ),
-		[ data, activeChip ]
+	// Search overrides chip scope: when the user is searching, results
+	// come from the full dataset (both chips) so a query can find any
+	// email. When search is empty, the active chip filter applies as a
+	// view scope. `activeChip` stays in state through a search and
+	// re-engages when search clears.
+	const isSearching = Boolean( view.search );
+	const visibleData = useMemo(
+		() =>
+			isSearching
+				? data
+				: data.filter( ( item ) => item.chip === activeChip ),
+		[ data, activeChip, isSearching ]
 	);
 	const { data: processedData, paginationInfo } = useMemo(
-		() => filterSortAndPaginate( chipFilteredData, view, fields ),
-		[ chipFilteredData, view, fields ]
+		() => filterSortAndPaginate( visibleData, view, fields ),
+		[ visibleData, view, fields ]
 	);
 
 	if ( false === pluginsReady ) {
@@ -413,19 +419,24 @@ const Emails = () => {
 				role="group"
 				aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }
 			>
-				{ CHIPS.map( ( chip ) => (
-					<Button
-						key={ chip.value }
-						variant={
-							activeChip === chip.value ? 'primary' : 'secondary'
-						}
-						aria-pressed={ activeChip === chip.value }
-						onClick={ () => selectChip( chip.value ) }
-						className="newspack-emails__chip"
-					>
-						{ chip.label }
-					</Button>
-				) ) }
+				{ CHIPS.map( ( chip ) => {
+					// During an active search, neither chip is filtering —
+					// render both as unpressed so the visual matches reality.
+					// Clicking either chip clears the search via selectChip
+					// and engages that chip's view.
+					const isActive = ! isSearching && activeChip === chip.value;
+					return (
+						<Button
+							key={ chip.value }
+							variant={ isActive ? 'primary' : 'secondary' }
+							aria-pressed={ isActive }
+							onClick={ () => selectChip( chip.value ) }
+							className="newspack-emails__chip"
+						>
+							{ chip.label }
+						</Button>
+					);
+				} ) }
 			</div>
 			<DataViews
 				className="newspack-emails"

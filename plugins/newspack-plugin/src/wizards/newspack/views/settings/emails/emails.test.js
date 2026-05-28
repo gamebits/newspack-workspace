@@ -572,4 +572,114 @@ describe( 'Emails', () => {
 			expect( mockCapturedView.page ).toBe( 1 );
 		} );
 	} );
+
+	it( 'search bypasses chip filter — operates across all chips', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		// Default (no search): chip filter active, reader-revenue only.
+		expect(
+			mockCapturedData.every( ( item ) => item.chip === 'reader-revenue' )
+		).toBe( true );
+		expect( mockCapturedData.length ).toBe( 4 );
+
+		// Activate search via the DataViews onChangeView prop.
+		act( () => {
+			mockCapturedOnChangeView( {
+				...mockCapturedView,
+				search: 'anything',
+				page: 1,
+			} );
+		} );
+
+		// Full dataset now flows into filterSortAndPaginate — both chips
+		// represented, no chip pre-filter applied.
+		await waitFor( () => {
+			expect( mockCapturedData.length ).toBe( mockEmails.length );
+		} );
+		const chipsRepresented = new Set(
+			mockCapturedData.map( ( item ) => item.chip )
+		);
+		expect( chipsRepresented ).toEqual(
+			new Set( [ 'reader-revenue', 'auth-account' ] )
+		);
+	} );
+
+	it( 'chip bar shows both chips unpressed during active search', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		const rrChip = screen.getByRole( 'button', { name: 'Reader revenue' } );
+		const aaChip = screen.getByRole( 'button', {
+			name: 'Authentication & account',
+		} );
+
+		// Default: Reader revenue chip is pressed.
+		expect( rrChip.getAttribute( 'aria-pressed' ) ).toBe( 'true' );
+		expect( aaChip.getAttribute( 'aria-pressed' ) ).toBe( 'false' );
+
+		// Search active — both chips deactivate visually (activeChip is
+		// still set in state, but the visual matches what's filtering).
+		act( () => {
+			mockCapturedOnChangeView( {
+				...mockCapturedView,
+				search: 'foo',
+				page: 1,
+			} );
+		} );
+
+		await waitFor( () => {
+			expect( rrChip.getAttribute( 'aria-pressed' ) ).toBe( 'false' );
+			expect( aaChip.getAttribute( 'aria-pressed' ) ).toBe( 'false' );
+		} );
+	} );
+
+	it( 'clearing search restores active chip pressed state', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		// Set search.
+		act( () => {
+			mockCapturedOnChangeView( {
+				...mockCapturedView,
+				search: 'foo',
+				page: 1,
+			} );
+		} );
+		await waitFor( () => {
+			expect(
+				screen
+					.getByRole( 'button', { name: 'Reader revenue' } )
+					.getAttribute( 'aria-pressed' )
+			).toBe( 'false' );
+		} );
+
+		// Clear search — activeChip (still 'reader-revenue') re-engages.
+		act( () => {
+			mockCapturedOnChangeView( {
+				...mockCapturedView,
+				search: '',
+				page: 1,
+			} );
+		} );
+		await waitFor( () => {
+			expect(
+				screen
+					.getByRole( 'button', { name: 'Reader revenue' } )
+					.getAttribute( 'aria-pressed' )
+			).toBe( 'true' );
+		} );
+	} );
 } );
