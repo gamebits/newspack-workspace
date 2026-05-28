@@ -14,7 +14,12 @@ import { Button } from '@wordpress/components';
 /**
  * Internal dependencies.
  */
-import { Badge, DataViews, Notice, utils } from '../../../../../../packages/components/src';
+import {
+	Badge,
+	DataViews,
+	Notice,
+	utils,
+} from '../../../../../../packages/components/src';
 import WizardsPluginCard from '../../../../wizards-plugin-card';
 import { useWizardApiFetch } from '../../../../hooks/use-wizard-api-fetch';
 import './emails.scss';
@@ -56,37 +61,53 @@ const DEFAULT_VIEW: View = {
 	descriptionField: 'trigger_description',
 };
 
-const PageHeading = () => <h1 className="screen-reader-text">{ __( 'Emails', 'newspack-plugin' ) }</h1>;
+const PageHeading = () => (
+	<h1 className="screen-reader-text">
+		{ __( 'Emails', 'newspack-plugin' ) }
+	</h1>
+);
 
 // The chip bar is a strict two-way toggle — every email belongs to exactly
 // one of these two groups. Defaults to 'reader-revenue' on first load.
 type ChipValue = 'reader-revenue' | 'auth-account';
 const CHIPS: { value: ChipValue; label: string }[] = [
-	{ value: 'reader-revenue', label: __( 'Reader revenue', 'newspack-plugin' ) },
-	{ value: 'auth-account', label: __( 'Authentication & account', 'newspack-plugin' ) },
+	{
+		value: 'reader-revenue',
+		label: __( 'Reader revenue', 'newspack-plugin' ),
+	},
+	{
+		value: 'auth-account',
+		label: __( 'Authentication & account', 'newspack-plugin' ),
+	},
 ];
 
 const Emails = () => {
 	const emailSections = window.newspackSettings.emails.sections;
-	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSections.emails.dependencies.newspackNewsletters ) );
+	const [ pluginsReady, setPluginsReady ] = useState(
+		Boolean( emailSections.emails.dependencies.newspackNewsletters )
+	);
 
 	// Seed from the SSR bootstrap (class-newspack-settings.php passes the same
 	// shape as api_get_email_settings()) so DataViews renders on first paint
 	// instead of waiting for the mount-time XHR.
 	const initial = emailSections.emails.initial;
-	const [ data, setData ] = useState< EmailItem[] >( initial?.newspack_emails ?? [] );
+	const [ data, setData ] = useState< EmailItem[] >(
+		( initial?.newspack_emails as EmailItem[] | undefined ) ?? []
+	);
 	const postType = initial?.post_type ?? emailSections.emails.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
-	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
+	const [ activeChip, setActiveChip ] =
+		useState< ChipValue >( 'reader-revenue' );
 
 	const selectChip = ( chip: ChipValue ) => {
 		setActiveChip( chip );
 		// Reset search + pagination on chip switch so the user sees the new
 		// group from the top with no leftover query.
-		setView( prev => ( { ...prev, search: '', page: 1 } ) );
+		setView( ( prev ) => ( { ...prev, search: '', page: 1 } ) );
 	};
 
-	const { wizardApiFetch, isFetching, errorMessage, resetError } = useWizardApiFetch( 'newspack-settings/emails' );
+	const { wizardApiFetch, isFetching, errorMessage, resetError } =
+		useWizardApiFetch( 'newspack-settings/emails' );
 
 	const fetchData = useCallback( () => {
 		resetError();
@@ -186,7 +207,10 @@ const Emails = () => {
 				enableGlobalSearch: true,
 				getValue: ( { item }: { item: EmailItem } ) => item.label,
 				render: ( { item }: { item: EmailItem } ) => (
-					<a href={ item.edit_link } className="newspack-emails__name-link">
+					<a
+						href={ item.edit_link }
+						className="newspack-emails__name-link"
+					>
 						<strong>{ item.label }</strong>
 					</a>
 				),
@@ -195,9 +219,12 @@ const Emails = () => {
 				id: 'trigger_description',
 				label: __( 'Description', 'newspack-plugin' ),
 				enableGlobalSearch: true,
-				getValue: ( { item }: { item: EmailItem } ) => item.trigger_description,
+				getValue: ( { item }: { item: EmailItem } ) =>
+					item.trigger_description,
 				render: ( { item }: { item: EmailItem } ) => (
-					<span className="newspack-emails__trigger-description">{ item.trigger_description }</span>
+					<span className="newspack-emails__trigger-description">
+						{ item.trigger_description }
+					</span>
 				),
 				enableHiding: false,
 				enableSorting: false,
@@ -207,9 +234,15 @@ const Emails = () => {
 				label: __( 'Recipient', 'newspack-plugin' ),
 				enableGlobalSearch: true,
 				getValue: ( { item }: { item: EmailItem } ) =>
-					item.recipient === 'admin' ? __( 'Admin', 'newspack-plugin' ) : __( 'Reader', 'newspack-plugin' ),
+					item.recipient === 'admin'
+						? __( 'Admin', 'newspack-plugin' )
+						: __( 'Reader', 'newspack-plugin' ),
 				render: ( { item }: { item: EmailItem } ) => (
-					<span>{ item.recipient === 'admin' ? __( 'Admin', 'newspack-plugin' ) : __( 'Reader', 'newspack-plugin' ) }</span>
+					<span>
+						{ item.recipient === 'admin'
+							? __( 'Admin', 'newspack-plugin' )
+							: __( 'Reader', 'newspack-plugin' ) }
+					</span>
 				),
 			},
 			{
@@ -221,13 +254,23 @@ const Emails = () => {
 					return (
 						<Badge
 							level={ isEnabled ? 'success' : 'default' }
-							text={ isEnabled ? __( 'Enabled', 'newspack-plugin' ) : __( 'Disabled', 'newspack-plugin' ) }
+							text={
+								isEnabled
+									? __( 'Enabled', 'newspack-plugin' )
+									: __( 'Disabled', 'newspack-plugin' )
+							}
 						/>
 					);
 				},
 				elements: [
-					{ value: 'publish', label: __( 'Enabled', 'newspack-plugin' ) },
-					{ value: 'draft', label: __( 'Disabled', 'newspack-plugin' ) },
+					{
+						value: 'publish',
+						label: __( 'Enabled', 'newspack-plugin' ),
+					},
+					{
+						value: 'draft',
+						label: __( 'Disabled', 'newspack-plugin' ),
+					},
 				],
 				filterBy: { isPrimary: false, operators: [ 'is' ] },
 			},
@@ -249,7 +292,9 @@ const Emails = () => {
 			label: __( 'Deactivate', 'newspack-plugin' ),
 			// Eligibility is category- and status-based only — no source guard.
 			// The callback routes by post_id type to pick the right endpoint.
-			isEligible: ( item: EmailItem ) => item.category !== 'reader-activation' && item.status === 'publish',
+			isEligible: ( item: EmailItem ) =>
+				item.category !== 'reader-activation' &&
+				item.status === 'publish',
 			callback: ( items: EmailItem[] ) => {
 				const item = items[ 0 ];
 				if ( typeof item.post_id === 'string' ) {
@@ -262,7 +307,9 @@ const Emails = () => {
 		{
 			id: 'activate',
 			label: __( 'Activate', 'newspack-plugin' ),
-			isEligible: ( item: EmailItem ) => item.category !== 'reader-activation' && item.status !== 'publish',
+			isEligible: ( item: EmailItem ) =>
+				item.category !== 'reader-activation' &&
+				item.status !== 'publish',
 			callback: ( items: EmailItem[] ) => {
 				const item = items[ 0 ];
 				if ( typeof item.post_id === 'string' ) {
@@ -278,9 +325,21 @@ const Emails = () => {
 			isDestructive: true,
 			// Source guard on reset only — WC emails aren't customized
 			// through the post editor, so reset has no meaning for them.
+<<<<<<< HEAD
 			isEligible: ( item: EmailItem ) => item.source === 'newspack',
+=======
+			isEligible: ( item: EmailItem ) =>
+				item.source !== 'woocommerce' && Boolean( item.registry_slug ),
+>>>>>>> ad72b7f611 (style(emails): prettier formatting on emails.tsx)
 			callback: ( items: EmailItem[] ) => {
-				if ( utils.confirmAction( __( 'Are you sure you want to reset the contents of this email?', 'newspack-plugin' ) ) ) {
+				if (
+					utils.confirmAction(
+						__(
+							'Are you sure you want to reset the contents of this email?',
+							'newspack-plugin'
+						)
+					)
+				) {
 					// Reset only fires for Newspack-source rows (per isEligible),
 					// which always carry an integer post_id.
 					resetEmail( items[ 0 ].post_id as number );
@@ -292,7 +351,10 @@ const Emails = () => {
 	// Strict 2-way chip filter — only rows matching activeChip pass through
 	// to DataViews. There's no "All" view by design (every email belongs to
 	// exactly one chip group).
-	const chipFilteredData = useMemo( () => data.filter( item => item.chip === activeChip ), [ data, activeChip ] );
+	const chipFilteredData = useMemo(
+		() => data.filter( ( item ) => item.chip === activeChip ),
+		[ data, activeChip ]
+	);
 	const { data: processedData, paginationInfo } = useMemo(
 		() => filterSortAndPaginate( chipFilteredData, view, fields ),
 		[ chipFilteredData, view, fields ]
@@ -304,16 +366,35 @@ const Emails = () => {
 				<PageHeading />
 				<Notice
 					isError
+<<<<<<< HEAD
 					noticeText={ __(
 						'Newspack uses Newspack Newsletters to handle editing email-type content. Please activate this plugin to proceed. Until this feature is configured, default receipts will be used.',
 						'newspack-plugin'
 					) }
+=======
+					noticeText={
+						__(
+							'Newspack uses Newspack Newsletters to handle editing email-type content. Please activate this plugin to proceed.',
+							'newspack-plugin'
+						) +
+						' ' +
+						__(
+							'Until this feature is configured, default receipts will be used.',
+							'newspack-plugin'
+						)
+					}
+>>>>>>> ad72b7f611 (style(emails): prettier formatting on emails.tsx)
 				/>
 				<WizardsPluginCard
 					slug="newspack-newsletters"
 					title={ __( 'Newspack Newsletters', 'newspack-plugin' ) }
-					description={ __( 'Newspack Newsletters is the plugin that powers Newspack email receipts.', 'newspack-plugin' ) }
-					onStatusChange={ ( statuses: Record< string, boolean > ) => {
+					description={ __(
+						'Newspack Newsletters is the plugin that powers Newspack email receipts.',
+						'newspack-plugin'
+					) }
+					onStatusChange={ (
+						statuses: Record< string, boolean >
+					) => {
 						if ( ! statuses.isLoading ) {
 							setPluginsReady( statuses.isSetup );
 						}
@@ -327,11 +408,17 @@ const Emails = () => {
 		<Fragment>
 			<PageHeading />
 			{ errorMessage && <Notice isError noticeText={ errorMessage } /> }
-			<div className="newspack-emails__chips" role="group" aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }>
-				{ CHIPS.map( chip => (
+			<div
+				className="newspack-emails__chips"
+				role="group"
+				aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }
+			>
+				{ CHIPS.map( ( chip ) => (
 					<Button
 						key={ chip.value }
-						variant={ activeChip === chip.value ? 'primary' : 'secondary' }
+						variant={
+							activeChip === chip.value ? 'primary' : 'secondary'
+						}
 						aria-pressed={ activeChip === chip.value }
 						onClick={ () => selectChip( chip.value ) }
 						className="newspack-emails__chip"
