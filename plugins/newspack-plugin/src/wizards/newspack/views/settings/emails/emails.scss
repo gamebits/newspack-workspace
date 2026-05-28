@@ -21,13 +21,16 @@
 // reads as unmoored — sitting at the section padding edge while the
 // DataViews controls are inset another 24px.
 //
-// Vertical: a tighter `margin-bottom` than the DataViews action-row top
-// padding pulls the chip bar visually into the same filter strip as
-// search rather than feeling like a separate region.
+// Vertical: `margin-bottom: 16px` exactly cancels the `-16px` pull-up
+// the Newspack DataViews wrapper applies in full-width contexts (see
+// packages/components/src/dataviews/style.scss). Anything smaller and
+// DataViews' background overlaps the bottom of the chip pills and
+// clips them. Internal `view-actions` padding-top (16px) provides the
+// visible gap between chips and the search row.
 .newspack-emails__chips {
 	display: flex;
 	gap: 8px;
-	margin-bottom: 8px;
+	margin-bottom: 16px;
 	padding: 0 24px;
 
 	// Nested for specificity over WP Button defaults — without the
