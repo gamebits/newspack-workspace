@@ -173,6 +173,8 @@ class Emails_Section extends Wizard_Section {
 	 * }
 	 */
 	public static function api_get_email_settings(): array {
+		self::maybe_first_run_enable_wc_emails();
+
 		$configs = Emails::get_email_configs();
 
 		// Split by source — Newspack configs go through Emails::get_emails()
@@ -269,6 +271,93 @@ class Emails_Section extends Wizard_Section {
 			$configs,
 			fn( $config ) => 'reader-revenue' === ( $config['chip'] ?? '' )
 		);
+	}
+
+	/**
+	 * Option name tracking which recommended WC email configs have been
+	 * processed by the first-run auto-enable. Storing processed keys (not
+	 * a single "ran once" boolean) keeps the logic idempotent across new
+	 * config additions: a future config that lands later still gets a
+	 * first-run pass on its first appearance, while previously-processed
+	 * configs are skipped — even if the user has manually disabled them
+	 * since.
+	 *
+	 * @var string
+	 */
+	const FIRST_RUN_OPTION = 'newspack_unified_emails_wc_first_run';
+
+	/**
+	 * On first encounter of a recommended WC email, enable it. Idempotent
+	 * per config key — once a key is in the FIRST_RUN_OPTION list, this
+	 * method never touches that email again. Critically, this means if
+	 * the user manually disables an auto-enabled email after first-run,
+	 * subsequent wizard loads do NOT re-enable it.
+	 *
+	 * Writes the email's enabled state through the same path as the
+	 * toggle endpoint (in-memory + option) for source-of-truth
+	 * consistency.
+	 *
+	 * Special case: `customer_notification_auto_renewal` requires the WC
+	 * Subscriptions master switch
+	 * (`woocommerce_subscriptions_customer_notifications_enabled`) to
+	 * also be enabled, otherwise the email never fires regardless of its
+	 * own enabled flag. Enabled here when the auto-renewal email itself
+	 * is first processed.
+	 */
+	private static function maybe_first_run_enable_wc_emails(): void {
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return;
+		}
+
+		$processed = (array) get_option( self::FIRST_RUN_OPTION, [] );
+		$configs   = Emails::get_email_configs();
+		$changed   = false;
+
+		foreach ( $configs as $type => $config ) {
+			if ( ( $config['source'] ?? 'newspack' ) !== 'woocommerce' ) {
+				continue;
+			}
+			if ( empty( $config['recommended'] ) ) {
+				continue;
+			}
+			// Already processed — don't touch even if currently disabled.
+			// This is the user-disabled-after-first-run protection.
+			if ( in_array( $type, $processed, true ) ) {
+				continue;
+			}
+			$wc_email = $config['wc_email_instance'] ?? null;
+			if ( ! $wc_email ) {
+				continue;
+			}
+
+			// Read current state from the option (authoritative — same as
+			// serialize_wc_email_row and the toggle endpoint). $wc_email->enabled
+			// is a snapshot from WC boot and can be stale.
+			$option_key      = $wc_email->get_option_key();
+			$options         = (array) get_option( $option_key, [] );
+			$current_enabled = $options['enabled'] ?? $wc_email->enabled;
+
+			if ( 'yes' !== $current_enabled ) {
+				$wc_email->enabled  = 'yes';
+				$options['enabled'] = 'yes';
+				update_option( $option_key, $options );
+			}
+
+			// Auto-renewal notice also needs the WCS master switch on.
+			if ( 'customer_notification_auto_renewal' === $type
+				&& 'yes' !== get_option( 'woocommerce_subscriptions_customer_notifications_enabled' )
+			) {
+				update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'yes' );
+			}
+
+			$processed[] = $type;
+			$changed     = true;
+		}
+
+		if ( $changed ) {
+			// autoload=false: read once per wizard request, not on every page load.
+			update_option( self::FIRST_RUN_OPTION, $processed, false );
+		}
 	}
 
 	/**
