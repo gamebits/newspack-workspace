@@ -40,10 +40,18 @@ class WooCommerce_Emails {
 
 	/**
 	 * Curated allowlist of WooCommerce-source emails surfaced in the
-	 * unified emails wizard, keyed by WC_Email::$id. Wrapped in a
-	 * function so __() runs at filter time, not class-load time.
+	 * unified emails wizard, keyed by `WC_Email::$id`. Wrapped in a
+	 * function so `__()` runs at filter time, not class-load time.
+	 *
+	 * The `class` field carries the WC_Email subclass name as a scalar
+	 * string. Storing the class name (not a live instance) keeps the
+	 * `newspack_email_configs` schema JSON-serializable and avoids
+	 * re-instantiating WC_Email objects across requests — the live
+	 * mailer-owned instance is resolved on demand via
+	 * {@see get_wc_email_by_id()}.
 	 *
 	 * @return array<string, array{
+	 *     class: string,
 	 *     chip: 'auth-account'|'reader-revenue',
 	 *     recipient: 'reader'|'admin',
 	 *     recommended: bool,
@@ -55,6 +63,7 @@ class WooCommerce_Emails {
 	private static function surfaced_wc_emails(): array {
 		return [
 			'customer_notification_auto_renewal' => [
+				'class'               => 'WCS_Email_Customer_Notification_Auto_Renewal',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -63,6 +72,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent before automatic renewal (timing depends on WooCommerce Subscriptions settings).', 'newspack-plugin' ),
 			],
 			'customer_payment_retry'             => [
+				'class'               => 'WCS_Email_Customer_Payment_Retry',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -71,6 +81,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent when a renewal payment fails, before the retry attempt.', 'newspack-plugin' ),
 			],
 			'expired_subscription'               => [
+				'class'               => 'WCS_Email_Expired_Subscription',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -79,6 +90,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent when a subscription reaches its expiration date.', 'newspack-plugin' ),
 			],
 			'customer_completed_switch_order'    => [
+				'class'               => 'WCS_Email_Completed_Switch_Order',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -87,6 +99,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent when a reader switches their subscription.', 'newspack-plugin' ),
 			],
 			'WCSG_Email_Customer_New_Account'    => [
+				'class'               => 'WCSG_Email_Customer_New_Account',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -95,6 +108,12 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent to the giftee when a gift subscription creates their account.', 'newspack-plugin' ),
 			],
 			'recipient_completed_order'          => [
+				// Note: the id is `recipient_completed_order` but the WCSG
+				// class name is `Recipient_New_Initial_Order`. Class and id
+				// don't follow the same naming pattern here — the entry is
+				// keyed by id (the mailer-emitted slug) and `class` carries
+				// the actual subclass name.
+				'class'               => 'WCSG_Email_Recipient_New_Initial_Order',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -103,6 +122,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent to the giftee to notify them of a gift subscription.', 'newspack-plugin' ),
 			],
 			'customer_new_account'               => [
+				'class'               => 'WC_Email_Customer_New_Account',
 				'chip'                => 'auth-account',
 				'recipient'           => 'reader',
 				'recommended'         => true,
@@ -111,6 +131,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent when a customer creates a new account.', 'newspack-plugin' ),
 			],
 			'customer_refunded_order'            => [
+				'class'               => 'WC_Email_Customer_Refunded_Order',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'reader',
 				'recommended'         => false,
@@ -119,6 +140,7 @@ class WooCommerce_Emails {
 				'trigger_description' => __( 'Sent when an order is refunded.', 'newspack-plugin' ),
 			],
 			'new_order'                          => [
+				'class'               => 'WC_Email_New_Order',
 				'chip'                => 'reader-revenue',
 				'recipient'           => 'admin',
 				'recommended'         => false,
@@ -133,12 +155,16 @@ class WooCommerce_Emails {
 	 * Inject WooCommerce-source email configs into the unified
 	 * `newspack_email_configs` filter set.
 	 *
-	 * Discovery-based: iterates `WC()->mailer()->get_emails()` and only
-	 * surfaces IDs in the curated allowlist (see surfaced_wc_emails()).
-	 * Unrecognized IDs are silently skipped. Each surfaced entry carries
-	 * the live `WC_Email` instance as `wc_email_instance` so downstream
-	 * code (toggle endpoint, first-run auto-enable) can invoke instance
-	 * methods directly instead of re-resolving via the mailer.
+	 * Iterates the curated allowlist (see {@see surfaced_wc_emails()})
+	 * directly — no `WC()->mailer()->get_emails()` call from the filter
+	 * callback. The mailer is consulted on-demand from
+	 * {@see get_wc_email_by_id()} when the toggle endpoint, first-run
+	 * auto-enable, or serialization actually needs the live instance.
+	 *
+	 * Each entry carries `wc_email_class` (the WC_Email subclass name as
+	 * a scalar string), NOT a live `WC_Email` instance — the schema
+	 * stays JSON-serializable, and no WC objects get re-instantiated
+	 * per call.
 	 *
 	 * @param array $configs Existing email configs from upstream providers.
 	 * @return array Configs with surfaced WC emails added.
@@ -147,20 +173,7 @@ class WooCommerce_Emails {
 		if ( ! function_exists( 'WC' ) || ! class_exists( 'WC_Emails' ) ) {
 			return $configs;
 		}
-		// Iterate the curated allowlist (not `WC()->mailer()->get_emails()`)
-		// so registration order — and thus display order in the wizard —
-		// follows our intentional grouping rather than WC's internal
-		// dispatch order. The mailer is indexed for O(1) instance lookup.
-		$surfaced = self::surfaced_wc_emails();
-		$by_id    = [];
-		foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
-			$by_id[ $wc_email->id ] = $wc_email;
-		}
-		foreach ( $surfaced as $id => $meta ) {
-			if ( ! isset( $by_id[ $id ] ) ) {
-				continue;
-			}
-			$wc_email = $by_id[ $id ];
+		foreach ( self::surfaced_wc_emails() as $id => $meta ) {
 			if ( ! empty( $meta['plugin_dependency'] ) ) {
 				$plugin_file = $meta['plugin_dependency'] . '/' . $meta['plugin_dependency'] . '.php';
 				if ( ! \Newspack\is_plugin_active( $plugin_file ) ) {
@@ -179,10 +192,88 @@ class WooCommerce_Emails {
 				'chip'                => $meta['chip'],
 				'woo_email_id'        => $id,
 				'plugin_dependency'   => $meta['plugin_dependency'],
-				'wc_email_instance'   => $wc_email,
+				'wc_email_class'      => $meta['class'],
 			];
 		}
 		return $configs;
+	}
+
+	/**
+	 * Memoized lookup of the mailer-owned `WC_Email` instance for a
+	 * surfaced email id.
+	 *
+	 * Calls `WC()->mailer()->get_emails()` once per request and caches
+	 * the by-id map for subsequent lookups. Returns `null` for ids that
+	 * the mailer doesn't have (WC not active, plugin not loaded, etc.) —
+	 * callers handle that gracefully (toggle/first-run skip; serialize
+	 * returns null for the row).
+	 *
+	 * The returned instance is the mailer-owned singleton — same object
+	 * across calls, no fresh instantiation. Tests can prime the cache
+	 * via {@see set_wc_email_by_id_for_test()} when real WC isn't
+	 * loaded in the test env.
+	 *
+	 * @param string $id The WC_Email id (e.g. `customer_payment_retry`).
+	 * @return \WC_Email|null The mailer-owned instance, or null.
+	 */
+	public static function get_wc_email_by_id( string $id ) {
+		if ( null === self::$by_id_cache ) {
+			self::$by_id_cache = [];
+			if ( function_exists( 'WC' ) && class_exists( 'WC_Emails' ) ) {
+				try {
+					foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
+						self::$by_id_cache[ $wc_email->id ] = $wc_email;
+					}
+				} catch ( \Throwable $e ) {
+					// Mailer not available — leave cache empty so callers
+					// fall through their null-handling paths.
+					unset( $e );
+				}
+			}
+		}
+		return self::$by_id_cache[ $id ] ?? null;
+	}
+
+	/**
+	 * Memoization cache for `get_wc_email_by_id()`. Null until first
+	 * lookup; populated lazily from `WC()->mailer()->get_emails()`.
+	 *
+	 * @var array<string, \WC_Email>|null
+	 */
+	private static $by_id_cache = null;
+
+	/**
+	 * Prime the by-id cache with a stub WC_Email instance.
+	 *
+	 * Test-only — lets PHPUnit suites that don't load real WC inject a
+	 * `WC_Email`-shaped stub for `get_wc_email_by_id()` to return. Tests
+	 * should pair this with `reset_wc_email_cache_for_test()` in
+	 * tear_down so cache state doesn't leak across tests.
+	 *
+	 * @internal
+	 *
+	 * @param string $id       WC_Email id (e.g. `customer_payment_retry`).
+	 * @param mixed  $instance The stub instance to return for this id.
+	 */
+	public static function set_wc_email_by_id_for_test( string $id, $instance ): void {
+		if ( null === self::$by_id_cache ) {
+			self::$by_id_cache = [];
+		}
+		self::$by_id_cache[ $id ] = $instance;
+	}
+
+	/**
+	 * Reset the by-id cache so the next `get_wc_email_by_id()` call
+	 * re-populates from the live mailer.
+	 *
+	 * Test-only — used in `tear_down` to prevent cross-test state leak.
+	 * Also useful in production if WC's mailer registrations change
+	 * within a single request, though that's a rare case.
+	 *
+	 * @internal
+	 */
+	public static function reset_wc_email_cache_for_test(): void {
+		self::$by_id_cache = null;
 	}
 
 	/**

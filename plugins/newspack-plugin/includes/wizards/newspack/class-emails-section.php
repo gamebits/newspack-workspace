@@ -11,6 +11,7 @@ use Newspack\Emails;
 use Newspack\Reader_Activation;
 use Newspack\Reader_Revenue_Emails;
 use Newspack\Wizards\Wizard_Section;
+use Newspack\WooCommerce_Emails;
 use WP_REST_Server;
 
 defined( 'ABSPATH' ) || exit;
@@ -107,11 +108,7 @@ class Emails_Section extends Wizard_Section {
 
 		$configs   = Emails::get_email_configs();
 		$wc_config = $configs[ $wc_email_id ] ?? null;
-		if (
-			! $wc_config
-			|| ( $wc_config['source'] ?? 'newspack' ) !== 'woocommerce'
-			|| empty( $wc_config['wc_email_instance'] )
-		) {
+		if ( ! $wc_config || 'woocommerce' !== ( $wc_config['source'] ?? 'newspack' ) ) {
 			return new \WP_Error(
 				'newspack_wc_email_not_allowed',
 				__( 'WooCommerce email is not in the surfaced allowlist.', 'newspack-plugin' ),
@@ -119,7 +116,14 @@ class Emails_Section extends Wizard_Section {
 			);
 		}
 
-		$wc_email = $wc_config['wc_email_instance'];
+		$wc_email = WooCommerce_Emails::get_wc_email_by_id( $wc_email_id );
+		if ( ! $wc_email ) {
+			return new \WP_Error(
+				'newspack_wc_email_not_allowed',
+				__( 'WooCommerce email is not in the surfaced allowlist.', 'newspack-plugin' ),
+				[ 'status' => 404 ]
+			);
+		}
 
 		// In-memory write first — keeps the cached mailer instance's
 		// $enabled property in sync for any downstream code in the same
@@ -144,9 +148,10 @@ class Emails_Section extends Wizard_Section {
 	 * Builds the unified emails list directly from the
 	 * `newspack_email_configs` schema — no parallel registry, no join.
 	 * Newspack-source configs resolve to WP posts via Emails::get_emails();
-	 * WooCommerce-source configs build rows from the live WC_Email
-	 * instance attached as `wc_email_instance` (see
-	 * WooCommerce_Emails::get_email_configs()).
+	 * WooCommerce-source configs build rows by resolving the live WC_Email
+	 * instance on-demand via WooCommerce_Emails::get_wc_email_by_id()
+	 * (the schema itself only carries `wc_email_class` — a scalar
+	 * string — so it stays JSON-serializable).
 	 *
 	 * @return array{
 	 *     newspack_emails: array<int, array{
@@ -178,8 +183,8 @@ class Emails_Section extends Wizard_Section {
 		$configs = Emails::get_email_configs();
 
 		// Split by source — Newspack configs go through Emails::get_emails()
-		// for post resolution; WC configs build rows directly from their
-		// attached wc_email_instance.
+		// for post resolution; WC configs build rows by resolving the
+		// live WC_Email instance via WooCommerce_Emails::get_wc_email_by_id().
 		$newspack_configs = array_filter(
 			$configs,
 			fn( $config ) => ( $config['source'] ?? 'newspack' ) !== 'woocommerce'
@@ -207,7 +212,8 @@ class Emails_Section extends Wizard_Section {
 
 		$newspack_emails = array_values( $emails );
 
-		// Build a row per WC config from its wc_email_instance.
+		// Build a row per WC config — serialize_wc_email_row resolves
+		// the live WC_Email instance via WooCommerce_Emails::get_wc_email_by_id().
 		foreach ( $wc_configs as $type => $config ) {
 			$wc_row = self::serialize_wc_email_row( $type, $config );
 			if ( null !== $wc_row ) {
@@ -335,7 +341,7 @@ class Emails_Section extends Wizard_Section {
 			if ( in_array( $type, $processed, true ) ) {
 				continue;
 			}
-			$wc_email = $config['wc_email_instance'] ?? null;
+			$wc_email = WooCommerce_Emails::get_wc_email_by_id( $type );
 			if ( ! $wc_email ) {
 				continue;
 			}
@@ -373,19 +379,29 @@ class Emails_Section extends Wizard_Section {
 	/**
 	 * Build a wizard response row for a WooCommerce-source config entry.
 	 *
-	 * Returns null if the config is missing its `wc_email_instance`.
+	 * Resolves the live `WC_Email` instance on-demand from
+	 * {@see WooCommerce_Emails::get_wc_email_by_id()} (memoized; one
+	 * mailer init per request). Returns null when the mailer doesn't
+	 * have the id — caller skips the row.
 	 *
 	 * Read the enabled state from the option rather than the in-memory
 	 * `WC_Email::$enabled` property — same-request writes to the option
 	 * (toggle endpoint, first-run auto-enable) may not be reflected on
 	 * the cached instance returned by WC()->mailer()->get_emails().
+	 * Falls back to `WC_Email::is_enabled()` (which reads the property
+	 * and runs the per-id `woocommerce_email_enabled_*` filter) when
+	 * the option key hasn't been written yet.
+	 *
+	 * The class name for the edit link is read from the config's
+	 * `wc_email_class` field — same value as `get_class($wc_email)`,
+	 * but avoids a runtime reflection call.
 	 *
 	 * @param string $type   Config key (equals WC_Email->id).
 	 * @param array  $config Unified config entry from newspack_email_configs.
-	 * @return ?array Wizard response row, or null if wc_email_instance is missing.
+	 * @return ?array Wizard response row, or null if the mailer doesn't know the id.
 	 */
 	private static function serialize_wc_email_row( string $type, array $config ): ?array {
-		$wc_email = isset( $config['wc_email_instance'] ) ? $config['wc_email_instance'] : null;
+		$wc_email = WooCommerce_Emails::get_wc_email_by_id( $type );
 		if ( ! $wc_email ) {
 			return null;
 		}
@@ -394,7 +410,7 @@ class Emails_Section extends Wizard_Section {
 		$wc_options = (array) get_option( $option_key, [] );
 		$is_enabled = isset( $wc_options['enabled'] )
 			? 'yes' === $wc_options['enabled']
-			: 'yes' === $wc_email->enabled;
+			: $wc_email->is_enabled();
 
 		return [
 			'type'                => $type,
@@ -402,7 +418,7 @@ class Emails_Section extends Wizard_Section {
 			'label'               => $config['label'] ?? '',
 			'description'         => $config['description'] ?? ( $config['trigger_description'] ?? '' ),
 			'post_id'             => 'wc:' . $type,
-			'edit_link'           => self::get_wc_email_edit_link( $type, get_class( $wc_email ) ),
+			'edit_link'           => self::get_wc_email_edit_link( $type, $config['wc_email_class'] ?? get_class( $wc_email ) ),
 			'subject'             => '',
 			'from_name'           => '',
 			'from_email'          => '',

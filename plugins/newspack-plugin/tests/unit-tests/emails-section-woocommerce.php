@@ -52,6 +52,15 @@ class Newspack_Test_Stub_WC_Email {
 	public function get_option_key(): string {
 		return 'woocommerce_' . $this->id . '_settings';
 	}
+
+	/**
+	 * Mirrors WC_Email::is_enabled() — reads the property. The real WC
+	 * method also runs a `woocommerce_email_enabled_*` filter, but for
+	 * the stub the property read is sufficient and deterministic.
+	 */
+	public function is_enabled(): bool {
+		return 'yes' === $this->enabled;
+	}
 }
 
 use Newspack\Emails;
@@ -70,20 +79,31 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	private $filter_callbacks = [];
 
 	/**
-	 * Remove any registered filter callbacks. Option writes are rolled
-	 * back by the WP test framework's per-test transaction.
+	 * Remove any registered filter callbacks AND reset the
+	 * WooCommerce_Emails by-id cache so primed stubs don't leak across
+	 * tests. Option writes are rolled back by the WP test framework's
+	 * per-test transaction.
 	 */
 	public function tear_down() {
 		foreach ( $this->filter_callbacks as $callback ) {
 			remove_filter( 'newspack_email_configs', $callback );
 		}
 		$this->filter_callbacks = [];
+		\Newspack\WooCommerce_Emails::reset_wc_email_cache_for_test();
 		parent::tear_down();
 	}
 
 	/**
-	 * Inject a stub WC config via `newspack_email_configs`. Returns the
-	 * stub so the caller can mutate or assert on it.
+	 * Inject a stub WC config via `newspack_email_configs` AND prime
+	 * the WooCommerce_Emails by-id cache so {@see WooCommerce_Emails::get_wc_email_by_id()}
+	 * returns the stub when the toggle endpoint / first-run /
+	 * serialization paths look up the instance.
+	 *
+	 * Two-step injection (config filter + cache seed) because the
+	 * refactor split the schema (scalar `wc_email_class`) from the
+	 * live instance (resolved on-demand). The filter provides what
+	 * validation reads; the seeded cache provides what the call sites
+	 * dereference.
 	 *
 	 * @param Newspack_Test_Stub_WC_Email $wc_email  Stub email instance.
 	 * @param array                       $overrides Config overrides (e.g. recommended => false).
@@ -101,7 +121,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 				'recipient'           => 'reader',
 				'recommended'         => true,
 				'chip'                => 'reader-revenue',
-				'wc_email_instance'   => $wc_email,
+				'wc_email_class'      => get_class( $wc_email ),
 			],
 			$overrides
 		);
@@ -112,6 +132,10 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		};
 		add_filter( 'newspack_email_configs', $callback );
 		$this->filter_callbacks[] = $callback;
+
+		// Prime the by-id cache so call sites resolve the stub.
+		\Newspack\WooCommerce_Emails::set_wc_email_by_id_for_test( $wc_email->id, $wc_email );
+
 		return $wc_email;
 	}
 
@@ -376,10 +400,9 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Toggling a Newspack-source id (no `wc_email_instance` attached)
-	 * returns 404 even though the id resolves to a real config. The
-	 * source-and-instance check guards against routing Newspack rows
-	 * through the WC toggle path.
+	 * Toggling a Newspack-source id returns 404 even though the id
+	 * resolves to a real config. The `source === 'woocommerce'` check
+	 * guards against routing Newspack rows through the WC toggle path.
 	 */
 	public function test_api_toggle_wc_email_rejects_newspack_source_id() {
 		$configs              = Emails::get_email_configs();
@@ -523,6 +546,159 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 			'no',
 			get_option( 'woocommerce_subscriptions_customer_notifications_enabled' ),
 			'Master switch should not be touched by non-auto-renewal first-runs.'
+		);
+	}
+
+	/*
+	 * ------------------------------------------------------------------
+	 * Bucket F.5 — Config schema shape (dkoo's refactor — drop instance)
+	 * ------------------------------------------------------------------
+	 * The unified `newspack_email_configs` schema MUST stay JSON-
+	 * serializable. The live `WC_Email` instance is resolved on-demand
+	 * via `WooCommerce_Emails::get_wc_email_by_id()` at the call sites
+	 * that need it; the config itself only carries the scalar
+	 * `wc_email_class` string.
+	 */
+
+	/**
+	 * Real-WC `WooCommerce_Emails::get_email_configs()` injects entries
+	 * that have NO `wc_email_instance` key and DO have a string
+	 * `wc_email_class` field.
+	 */
+	public function test_wc_emails_get_email_configs_no_instance_has_class_string() {
+		if ( ! class_exists( 'WC_Emails' ) ) {
+			$this->markTestSkipped( 'Real WC not loaded; the get_email_configs() loop bails before injecting anything.' );
+		}
+
+		$configs = \Newspack\WooCommerce_Emails::get_email_configs( [] );
+		$this->assertNotEmpty( $configs, 'Expected at least one surfaced WC config.' );
+
+		foreach ( $configs as $id => $config ) {
+			$this->assertArrayNotHasKey(
+				'wc_email_instance',
+				$config,
+				"Config '$id' must NOT carry a live WC_Email instance (breaks JSON serialization)."
+			);
+			$this->assertArrayHasKey(
+				'wc_email_class',
+				$config,
+				"Config '$id' must carry the scalar wc_email_class field."
+			);
+			$this->assertIsString( $config['wc_email_class'], "Config '$id' wc_email_class must be a string." );
+			$this->assertNotEmpty( $config['wc_email_class'], "Config '$id' wc_email_class must not be empty." );
+		}
+	}
+
+	/**
+	 * Spot-check one specific id → class mapping that exercises a path
+	 * the loop touches (WC core, no plugin_dependency gating).
+	 */
+	public function test_wc_emails_customer_new_account_class_mapping() {
+		if ( ! class_exists( 'WC_Emails' ) ) {
+			$this->markTestSkipped( 'Real WC not loaded.' );
+		}
+
+		$configs = \Newspack\WooCommerce_Emails::get_email_configs( [] );
+		$this->assertArrayHasKey( 'customer_new_account', $configs );
+		$this->assertSame( 'WC_Email_Customer_New_Account', $configs['customer_new_account']['wc_email_class'] );
+	}
+
+	/**
+	 * The whole unified config set must be JSON-encodable. If anyone
+	 * accidentally smuggles a WC_Email instance back in (a closed-over
+	 * filter callback, a stray field) wp_json_encode would return false
+	 * because WC_Email holds non-serializable references.
+	 */
+	public function test_unified_email_configs_are_json_encodable() {
+		$json = wp_json_encode( Emails::get_email_configs() );
+
+		$this->assertNotFalse(
+			$json,
+			'wp_json_encode(Emails::get_email_configs()) returned false — something in the schema is not JSON-serializable.'
+		);
+		$this->assertStringNotContainsString(
+			'wc_email_instance',
+			(string) $json,
+			'No `wc_email_instance` key should appear in the serialized config schema.'
+		);
+	}
+
+	/*
+	 * ------------------------------------------------------------------
+	 * Bucket F.6 — WooCommerce_Emails::get_wc_email_by_id() helper
+	 * ------------------------------------------------------------------
+	 */
+
+	/**
+	 * Returns null for ids that aren't in the mailer (or surfaced
+	 * allowlist) — callers handle that gracefully.
+	 */
+	public function test_get_wc_email_by_id_returns_null_for_unknown_id() {
+		\Newspack\WooCommerce_Emails::reset_wc_email_cache_for_test();
+		$result = \Newspack\WooCommerce_Emails::get_wc_email_by_id( 'this_id_does_not_exist' );
+		$this->assertNull( $result );
+	}
+
+	/**
+	 * Memoization: two calls for the same id return the exact same
+	 * object (proves the cache isn't re-fetching from the mailer).
+	 */
+	public function test_get_wc_email_by_id_memoizes() {
+		// Prime with a stub so this test works without real WC. The
+		// memoization contract is the same: the second call returns the
+		// same object reference as the first.
+		$stub = new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' );
+		\Newspack\WooCommerce_Emails::set_wc_email_by_id_for_test( $stub->id, $stub );
+
+		$a = \Newspack\WooCommerce_Emails::get_wc_email_by_id( $stub->id );
+		$b = \Newspack\WooCommerce_Emails::get_wc_email_by_id( $stub->id );
+
+		$this->assertSame( $a, $b, 'Helper must return the same object reference across calls.' );
+		$this->assertSame( $stub, $a, 'Helper must return the primed instance.' );
+	}
+
+	/**
+	 * Helper round-trip against real WC: the returned instance is the
+	 * mailer-owned singleton, not a fresh instantiation. Skipped when
+	 * real WC isn't loaded.
+	 */
+	public function test_get_wc_email_by_id_returns_mailer_owned_singleton() {
+		if ( ! function_exists( 'WC' ) || ! class_exists( 'WC_Emails' ) ) {
+			$this->markTestSkipped( 'Real WC not loaded; cannot compare against WC()->mailer()->get_emails().' );
+		}
+
+		\Newspack\WooCommerce_Emails::reset_wc_email_cache_for_test();
+
+		$mailer_emails = \WC()->mailer()->get_emails();
+		// Find any id that's both in the mailer AND surfaced — use the
+		// first one to avoid coupling to a specific id.
+		$id_to_test = null;
+		foreach ( $mailer_emails as $wc_email ) {
+			if ( 'customer_new_account' === $wc_email->id ) {
+				$id_to_test = $wc_email->id;
+				break;
+			}
+		}
+		if ( ! $id_to_test ) {
+			$this->markTestSkipped( 'customer_new_account not registered in this WC env.' );
+		}
+
+		// Reset, then compare: the helper's returned instance MUST be
+		// the same object as the one the mailer hands out.
+		$mailer_owned = null;
+		foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
+			if ( $wc_email->id === $id_to_test ) {
+				$mailer_owned = $wc_email;
+				break;
+			}
+		}
+
+		$resolved = \Newspack\WooCommerce_Emails::get_wc_email_by_id( $id_to_test );
+
+		$this->assertSame(
+			$mailer_owned,
+			$resolved,
+			'Helper must return the mailer-owned singleton, not a fresh instantiation.'
 		);
 	}
 }
