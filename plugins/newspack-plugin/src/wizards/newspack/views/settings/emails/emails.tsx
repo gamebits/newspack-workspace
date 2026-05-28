@@ -311,16 +311,7 @@ const Emails = () => {
 			isDestructive: true,
 			// Source guard on reset only — WC emails aren't customized
 			// through the post editor, so reset has no meaning for them.
-<<<<<<< HEAD
-<<<<<<< HEAD
 			isEligible: ( item: EmailItem ) => item.source === 'newspack',
-=======
-			isEligible: ( item: EmailItem ) =>
-				item.source !== 'woocommerce' && Boolean( item.registry_slug ),
->>>>>>> ad72b7f611 (style(emails): prettier formatting on emails.tsx)
-=======
-			isEligible: ( item: EmailItem ) => item.source !== 'woocommerce' && Boolean( item.registry_slug ),
->>>>>>> e090a44b9d (fix(emails): satisfy CI lint (PHPCS + prettier))
 			callback: ( items: EmailItem[] ) => {
 				if ( utils.confirmAction( __( 'Are you sure you want to reset the contents of this email?', 'newspack-plugin' ) ) ) {
 					// Reset only fires for Newspack-source rows (per isEligible),
@@ -349,21 +340,10 @@ const Emails = () => {
 				<PageHeading />
 				<Notice
 					isError
-<<<<<<< HEAD
 					noticeText={ __(
 						'Newspack uses Newspack Newsletters to handle editing email-type content. Please activate this plugin to proceed. Until this feature is configured, default receipts will be used.',
 						'newspack-plugin'
 					) }
-=======
-					noticeText={
-						__(
-							'Newspack uses Newspack Newsletters to handle editing email-type content. Please activate this plugin to proceed.',
-							'newspack-plugin'
-						) +
-						' ' +
-						__( 'Until this feature is configured, default receipts will be used.', 'newspack-plugin' )
-					}
->>>>>>> ad72b7f611 (style(emails): prettier formatting on emails.tsx)
 				/>
 				<WizardsPluginCard
 					slug="newspack-newsletters"
