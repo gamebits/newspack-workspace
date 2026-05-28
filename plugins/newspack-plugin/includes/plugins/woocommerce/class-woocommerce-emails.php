@@ -228,13 +228,73 @@ class WooCommerce_Emails {
 						self::$by_id_cache[ $wc_email->id ] = $wc_email;
 					}
 				} catch ( \Throwable $e ) {
-					// Mailer not available — leave cache empty so callers
-					// fall through their null-handling paths.
-					unset( $e );
+					// Mailer init failed. Log so this surfaces in newspack-log
+					// instead of being a silent empty-list — callers fall
+					// through their null-handling paths regardless.
+					Logger::log(
+						'WC mailer init failed in get_wc_email_by_id: ' . $e->getMessage(),
+						'NEWSPACK-WC-EMAILS',
+						'error'
+					);
 				}
 			}
 		}
 		return self::$by_id_cache[ $id ] ?? null;
+	}
+
+	/**
+	 * Write the enabled state for a WC email — single source of truth for
+	 * the dual-write (in-memory $wc_email->enabled + the
+	 * `woocommerce_*_settings` option). Both the toggle endpoint and the
+	 * first-run auto-enable call this so the write order and rollback
+	 * semantics stay consistent across paths.
+	 *
+	 * Order: in-memory first (keeps the cached mailer instance's `enabled`
+	 * property in sync for any downstream code in the same request that
+	 * reads it directly), then the option (authoritative source — WP busts
+	 * the alloptions cache on update_option so subsequent get_option calls
+	 * see the new value in the same request).
+	 *
+	 * If the option write fails (returns false from a real change — i.e.
+	 * a `pre_update_option_*` filter rejected it), the in-memory write is
+	 * rolled back and this returns false so the caller can surface the
+	 * failure to the client.
+	 *
+	 * @param string $id      The WC_Email id.
+	 * @param bool   $enabled Target enabled state.
+	 * @return bool True on success, false if the email isn't resolvable
+	 *              or the option write was rejected.
+	 */
+	public static function set_wc_email_enabled_state( string $id, bool $enabled ): bool {
+		$wc_email = self::get_wc_email_by_id( $id );
+		if ( ! $wc_email ) {
+			return false;
+		}
+
+		$option_key      = $wc_email->get_option_key();
+		$options         = (array) get_option( $option_key, [] );
+		$previous_in_mem = $wc_email->enabled;
+		$new_value       = $enabled ? 'yes' : 'no';
+
+		// Same-value short-circuit: update_option returns false for
+		// unchanged values, which is indistinguishable from a real
+		// failure. Treat no-op as success.
+		if ( isset( $options['enabled'] ) && $options['enabled'] === $new_value ) {
+			$wc_email->enabled = $new_value;
+			return true;
+		}
+
+		$wc_email->enabled  = $new_value;
+		$options['enabled'] = $new_value;
+
+		if ( ! update_option( $option_key, $options ) ) {
+			// Roll back the in-memory write so the cached mailer
+			// instance doesn't carry a state the DB never recorded.
+			$wc_email->enabled = $previous_in_mem;
+			return false;
+		}
+
+		return true;
 	}
 
 	/**

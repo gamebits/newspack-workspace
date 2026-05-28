@@ -17,6 +17,25 @@ class Emails {
 	const EMAIL_CONFIG_NAME_META = 'newspack_email_type'; // "type" for legacy reasons.
 
 	/**
+	 * Request-scoped cache for `get_email_configs()`. Null = uncached.
+	 *
+	 * @var array|null
+	 */
+	private static $email_configs_cache = null;
+
+	/**
+	 * Reset the `get_email_configs()` request-scoped cache. Call after
+	 * mutating the `newspack_email_configs` filter mid-request (rare in
+	 * production; tests use it to assert per-filter-callback behavior
+	 * without bleeding state across assertions).
+	 *
+	 * @return void
+	 */
+	public static function reset_email_configs_cache(): void {
+		self::$email_configs_cache = null;
+	}
+
+	/**
 	 * Initialize.
 	 *
 	 * @codeCoverageIgnore
@@ -439,9 +458,21 @@ class Emails {
 	 *    may be absent.
 	 */
 	public static function get_email_configs() {
+		// Request-scoped memoization. This method is called repeatedly per
+		// request — directly by the wizard's response builder, and
+		// transitively by serialize_email/get_email_config_by_type once
+		// per email row. Each call would otherwise re-run apply_filters
+		// across every registered provider plus apply_config_defaults on
+		// every entry. Tests that mutate filter callbacks mid-test can
+		// invalidate the cache via reset_email_configs_cache().
+		if ( null !== self::$email_configs_cache ) {
+			return self::$email_configs_cache;
+		}
+
 		$configs = apply_filters( 'newspack_email_configs', [] );
 		if ( ! is_array( $configs ) ) {
-			return [];
+			self::$email_configs_cache = [];
+			return self::$email_configs_cache;
 		}
 		foreach ( $configs as $type => $config ) {
 			// Defensive: a third-party filter callback can return a non-array
@@ -455,7 +486,8 @@ class Emails {
 			}
 			$configs[ $type ] = self::apply_config_defaults( $config );
 		}
-		return $configs;
+		self::$email_configs_cache = $configs;
+		return self::$email_configs_cache;
 	}
 
 	/**

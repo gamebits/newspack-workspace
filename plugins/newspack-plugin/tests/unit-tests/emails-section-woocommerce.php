@@ -83,6 +83,9 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	public function set_up() {
 		parent::set_up();
 		add_filter( 'newspack_woocommerce_active', '__return_true' );
+		// Reset the request-scoped Emails::get_email_configs cache so
+		// per-test filter callbacks registered below are reflected.
+		Emails::reset_email_configs_cache();
 	}
 
 	/**
@@ -98,6 +101,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		}
 		$this->filter_callbacks = [];
 		\Newspack\WooCommerce_Emails::reset_wc_email_cache_for_test();
+		Emails::reset_email_configs_cache();
 		parent::tear_down();
 	}
 
@@ -140,6 +144,9 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		};
 		add_filter( 'newspack_email_configs', $callback );
 		$this->filter_callbacks[] = $callback;
+		// Newly-registered filter callbacks need a cache bust to surface
+		// in the next Emails::get_email_configs() call.
+		Emails::reset_email_configs_cache();
 
 		// Prime the by-id cache so call sites resolve the stub.
 		\Newspack\WooCommerce_Emails::set_wc_email_by_id_for_test( $wc_email->id, $wc_email );
@@ -209,7 +216,6 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 
 		$this->assertCount( 1, $rows, 'Expected the stub config to surface exactly once.' );
 		$this->assertSame( $wc_email->id, $rows[0]['type'] );
-		$this->assertSame( $wc_email->id, $rows[0]['registry_slug'] );
 		$this->assertSame( 'woocommerce', $rows[0]['source'] );
 		$this->assertSame( 'reader-revenue', $rows[0]['chip'] );
 		$this->assertSame( 'publish', $rows[0]['status'], 'enabled=yes should serialize to status=publish.' );
@@ -454,7 +460,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		update_option( Emails_Section::FIRST_RUN_OPTION, [ $wc_email->id ], false );
 		update_option( $wc_email->get_option_key(), [ 'enabled' => 'no' ] );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$options = (array) get_option( $wc_email->get_option_key(), [] );
 		$this->assertSame( 'no', $options['enabled'], 'Already-processed email must NOT be re-enabled.' );
@@ -474,7 +480,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 			[ 'recommended' => false ]
 		);
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$this->assertFalse(
 			get_option( $wc_email->get_option_key() ),
@@ -506,7 +512,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		// Ensure the WC settings option doesn't exist in the DB.
 		delete_option( $wc_email->get_option_key() );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$options = (array) get_option( $wc_email->get_option_key(), [] );
 		$this->assertSame( 'yes', $options['enabled'], 'Unset option should get enabled=yes on first-run.' );
@@ -528,7 +534,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		// Publisher has explicitly disabled this email via WC settings.
 		update_option( $wc_email->get_option_key(), [ 'enabled' => 'no' ] );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$options = (array) get_option( $wc_email->get_option_key(), [] );
 		$this->assertSame(
@@ -562,7 +568,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		);
 		delete_option( $wc_email->get_option_key() );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$this->assertSame(
 			'yes',
@@ -593,7 +599,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		);
 		delete_option( $wc_email->get_option_key() );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$this->assertSame(
 			'no',
@@ -623,7 +629,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		);
 		delete_option( $wc_email->get_option_key() );
 
-		Emails_Section::api_get_email_settings();
+		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$this->assertFalse(
 			get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false ),

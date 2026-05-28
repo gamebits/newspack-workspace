@@ -32,6 +32,20 @@ class Emails_Section extends Wizard_Section {
 	protected $wizard_slug = 'newspack-settings';
 
 	/**
+	 * Constructor — extends Wizard_Section's REST-route hookup with an
+	 * admin_init handler for the WC first-run auto-enable. Decoupling
+	 * first-run from api_get_email_settings keeps the GET endpoint
+	 * idempotent (probes / crawlers can no longer trigger silent
+	 * WC option writes).
+	 *
+	 * @param array $args Section arguments.
+	 */
+	public function __construct( $args = [] ) {
+		parent::__construct( $args );
+		add_action( 'admin_init', [ __CLASS__, 'maybe_first_run_enable_wc_emails' ] );
+	}
+
+	/**
 	 * Whether WooCommerce is active.
 	 *
 	 * Mockable in tests via the `newspack_woocommerce_active` filter. The
@@ -128,6 +142,8 @@ class Emails_Section extends Wizard_Section {
 			);
 		}
 
+		// Validate the id is one of the surfaced WC configs before
+		// touching the mailer — defense against arbitrary id input.
 		$configs   = Emails::get_email_configs();
 		$wc_config = $configs[ $wc_email_id ] ?? null;
 		if ( ! $wc_config || 'woocommerce' !== ( $wc_config['source'] ?? 'newspack' ) ) {
@@ -138,28 +154,13 @@ class Emails_Section extends Wizard_Section {
 			);
 		}
 
-		$wc_email = WooCommerce_Emails::get_wc_email_by_id( $wc_email_id );
-		if ( ! $wc_email ) {
+		if ( ! WooCommerce_Emails::set_wc_email_enabled_state( $wc_email_id, $enabled ) ) {
 			return new \WP_Error(
-				'newspack_wc_email_not_allowed',
-				__( 'WooCommerce email is not in the surfaced allowlist.', 'newspack-plugin' ),
-				[ 'status' => 404 ]
+				'newspack_wc_email_write_failed',
+				__( 'Could not update the WooCommerce email state.', 'newspack-plugin' ),
+				[ 'status' => 500 ]
 			);
 		}
-
-		// In-memory write first — keeps the cached mailer instance's
-		// $enabled property in sync for any downstream code in the same
-		// request that reads it directly rather than going through the
-		// option.
-		$wc_email->enabled = $enabled ? 'yes' : 'no';
-
-		// Option write — authoritative source. serialize_wc_email_row()
-		// reads from this option, so the refreshed api_get_email_settings()
-		// response below reflects the toggled state.
-		$option_key         = $wc_email->get_option_key();
-		$options            = (array) get_option( $option_key, [] );
-		$options['enabled'] = $enabled ? 'yes' : 'no';
-		update_option( $option_key, $options );
 
 		return rest_ensure_response( self::api_get_email_settings() );
 	}
@@ -200,8 +201,9 @@ class Emails_Section extends Wizard_Section {
 	 * }
 	 */
 	public static function api_get_email_settings(): array {
-		self::maybe_first_run_enable_wc_emails();
-
+		// First-run runs on admin_init (constructor-hooked), not here —
+		// keeps the GET endpoint idempotent so probes / crawlers / SSR
+		// bootstrap reads can't trigger WC option writes as a side effect.
 		$configs = Emails::get_email_configs();
 
 		// Split by source — Newspack configs go through Emails::get_emails()
@@ -338,24 +340,38 @@ class Emails_Section extends Wizard_Section {
 	 * at all (publisher has never saved that email's WC settings form).
 	 * An explicit `'no'` is a deliberate publisher decision; preserve it.
 	 *
+	 * Hooked on `admin_init` rather than called from `api_get_email_settings()`
+	 * so the GET endpoint stays idempotent — a probe, schema crawler, or
+	 * sibling-admin pageload that hits the wizard route doesn't trigger
+	 * silent WC option writes. The endpoint just reads; this method
+	 * does the writing exactly once per slug, gated by an authenticated
+	 * admin pageload.
+	 *
+	 * Auth/account-chipped WC configs (e.g. customer_new_account) are
+	 * skipped when Reader Activation is disabled — that matches the
+	 * filter the wizard surface applies via filter_configs_by_ra_state
+	 * for visibility, and prevents an auth-only WC email from auto-firing
+	 * on a store-only site that never opted into RA.
+	 *
 	 * Special case: `customer_notification_auto_renewal` requires the WC
 	 * Subscriptions master switch
 	 * (`woocommerce_subscriptions_customer_notifications_enabled`) to
 	 * also be on — otherwise the email never fires regardless of its own
-	 * flag. We enable the master switch only when the option doesn't
-	 * exist in the DB (`false === get_option(..., false)`). A publisher
-	 * who explicitly disabled it is making a site-wide policy choice
-	 * about all WCS customer notifications, not just this one email; we
-	 * do not silently reverse that.
+	 * flag. The master-switch write is nested INSIDE the `! isset` guard
+	 * so it only fires when we're actually auto-enabling the email. A
+	 * publisher who toggled the auto_renewal email OFF before first-run
+	 * ran (`isset($options['enabled'])` already true) doesn't get the
+	 * site-wide WCS master switch silently flipped on as a side effect.
 	 */
-	private static function maybe_first_run_enable_wc_emails(): void {
+	public static function maybe_first_run_enable_wc_emails(): void {
 		if ( ! self::is_woocommerce_active() ) {
 			return;
 		}
 
-		$processed = (array) get_option( self::FIRST_RUN_OPTION, [] );
-		$configs   = Emails::get_email_configs();
-		$changed   = false;
+		$ra_enabled = Reader_Activation::is_enabled();
+		$processed  = (array) get_option( self::FIRST_RUN_OPTION, [] );
+		$configs    = Emails::get_email_configs();
+		$changed    = false;
 
 		foreach ( $configs as $type => $config ) {
 			if ( ( $config['source'] ?? 'newspack' ) !== 'woocommerce' ) {
@@ -369,6 +385,17 @@ class Emails_Section extends Wizard_Section {
 			if ( in_array( $type, $processed, true ) ) {
 				continue;
 			}
+			// Don't auto-enable auth-account WC emails on sites that
+			// haven't opted into Reader Activation. The wizard's read
+			// path already hides them via filter_configs_by_ra_state;
+			// mirror that here so the write path doesn't fire unrelated
+			// WC emails on store-only sites.
+			if ( ! $ra_enabled && 'reader-revenue' !== ( $config['chip'] ?? '' ) ) {
+				$processed[] = $type;
+				$changed     = true;
+				continue;
+			}
+
 			$wc_email = WooCommerce_Emails::get_wc_email_by_id( $type );
 			if ( ! $wc_email ) {
 				continue;
@@ -378,22 +405,23 @@ class Emails_Section extends Wizard_Section {
 			$options    = (array) get_option( $option_key, [] );
 
 			// Only write when the publisher hasn't recorded a decision
-			// yet. An explicit 'no' is preserved.
+			// yet. An explicit 'no' is preserved. The WCS master-switch
+			// write is nested inside the same guard so a publisher who
+			// already disabled the email doesn't get the site-wide
+			// master switch silently flipped on.
 			if ( ! isset( $options['enabled'] ) ) {
-				$wc_email->enabled  = 'yes';
-				$options['enabled'] = 'yes';
-				update_option( $option_key, $options );
-			}
+				WooCommerce_Emails::set_wc_email_enabled_state( $type, true );
 
-			// WCS master switch: enable only when not present in the DB.
-			// `get_option(..., false)` returns the default `false` only
-			// when the option row doesn't exist — an explicit `'no'`
-			// returns `'no'` and is preserved.
-			if (
-				'customer_notification_auto_renewal' === $type
-				&& false === get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false )
-			) {
-				update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'yes' );
+				// WCS master switch: enable only when not present in the
+				// DB. `get_option(..., false)` returns the default `false`
+				// only when the option row doesn't exist — an explicit
+				// `'no'` returns `'no'` and is preserved.
+				if (
+					'customer_notification_auto_renewal' === $type
+					&& false === get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false )
+				) {
+					update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'yes' );
+				}
 			}
 
 			// Mark as processed regardless of whether we wrote — once we
@@ -405,7 +433,7 @@ class Emails_Section extends Wizard_Section {
 		}
 
 		if ( $changed ) {
-			// autoload=false: read once per wizard request, not on every page load.
+			// autoload=false: read once per admin pageload, not on every page load.
 			update_option( self::FIRST_RUN_OPTION, $processed, false );
 		}
 	}
@@ -446,13 +474,18 @@ class Emails_Section extends Wizard_Section {
 			? 'yes' === $wc_options['enabled']
 			: $wc_email->is_enabled();
 
+		// Resolve once, pass to the edit-link helper — both fields use
+		// the same lookup (option read + class_exists + WC posts-manager
+		// DB query), so doing it twice per row would be wasteful.
+		$template_post_id = self::get_wc_email_template_post_id( $type );
+
 		return [
 			'type'                => $type,
 			'category'            => 'woocommerce',
 			'label'               => $config['label'] ?? '',
 			'description'         => $config['description'] ?? ( $config['trigger_description'] ?? '' ),
 			'post_id'             => 'wc:' . $type,
-			'edit_link'           => self::get_wc_email_edit_link( $type, $config['wc_email_class'] ?? get_class( $wc_email ) ),
+			'edit_link'           => self::get_wc_email_edit_link( $template_post_id, $config['wc_email_class'] ?? get_class( $wc_email ) ),
 			'subject'             => '',
 			'from_name'           => '',
 			'from_email'          => '',
@@ -464,8 +497,7 @@ class Emails_Section extends Wizard_Section {
 			'recommended'         => $config['recommended'] ?? false,
 			'chip'                => $config['chip'] ?? 'auth-account',
 			'source'              => 'woocommerce',
-			'registry_slug'       => $type,
-			'preview_post_id'     => self::get_wc_email_template_post_id( $type ),
+			'preview_post_id'     => $template_post_id,
 		];
 	}
 
@@ -502,35 +534,34 @@ class Emails_Section extends Wizard_Section {
 	/**
 	 * Build the admin edit link for a WooCommerce email.
 	 *
-	 * Routes to the block editor template post when one exists (and the
-	 * WC block email editor is enabled), otherwise falls back to the
+	 * Routes to the block editor template post when one exists (the caller
+	 * resolves the template_post_id from get_wc_email_template_post_id —
+	 * passed in here so a single resolution serves both this and the
+	 * `preview_post_id` field on the row), otherwise falls back to the
 	 * classic WC settings page filtered to the email's section.
 	 *
-	 * @param string $wc_email_id    The WC_Email instance ID.
-	 * @param string $wc_email_class Fully-qualified WC_Email subclass name.
+	 * @param int|null $template_post_id Block-editor template post ID, or null.
+	 * @param string   $wc_email_class   Fully-qualified WC_Email subclass name.
 	 * @return string Admin URL.
 	 */
-	private static function get_wc_email_edit_link( string $wc_email_id, string $wc_email_class ): string {
-		$classic_url = add_query_arg(
+	private static function get_wc_email_edit_link( ?int $template_post_id, string $wc_email_class ): string {
+		if ( $template_post_id ) {
+			return add_query_arg(
+				[
+					'post'   => $template_post_id,
+					'action' => 'edit',
+				],
+				admin_url( 'post.php' )
+			);
+		}
+
+		return add_query_arg(
 			[
 				'page'    => 'wc-settings',
 				'tab'     => 'email',
 				'section' => strtolower( $wc_email_class ),
 			],
 			admin_url( 'admin.php' )
-		);
-
-		$template_post_id = self::get_wc_email_template_post_id( $wc_email_id );
-		if ( ! $template_post_id ) {
-			return $classic_url;
-		}
-
-		return add_query_arg(
-			[
-				'post'   => $template_post_id,
-				'action' => 'edit',
-			],
-			admin_url( 'post.php' )
 		);
 	}
 }

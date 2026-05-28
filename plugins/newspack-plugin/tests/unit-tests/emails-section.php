@@ -209,16 +209,6 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Slice 1 filters out WooCommerce-source rows. Slice 2 lifts this filter.
-	 */
-	public function test_api_get_email_settings_excludes_woocommerce_source() {
-		$result = Emails_Section::api_get_email_settings();
-		foreach ( $result['newspack_emails'] as $email ) {
-			$this->assertNotSame( 'woocommerce', $email['source'] ?? 'newspack', 'Row should not be WC-sourced in slice 1.' );
-		}
-	}
-
-	/**
 	 * Within-category tiebreaker is config-registration order, not
 	 * alphabetical. Providers register in deliberate order
 	 * (Reader_Revenue_Emails: receipt → welcome → cancellation;
@@ -230,7 +220,9 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		$result = Emails_Section::api_get_email_settings();
 
 		// Reader-revenue group: receipt → welcome → cancellation
-		// (per Reader_Revenue_Emails::add_email_configs() order).
+		// (per Reader_Revenue_Emails::add_email_configs() order), then
+		// group-subscription-invite (also reader-revenue category after
+		// the slice-1 fix flipped it from reader-activation).
 		$rr_types = array_values(
 			array_map(
 				fn( $email ) => $email['type'],
@@ -245,9 +237,10 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 				Reader_Revenue_Emails::EMAIL_TYPES['RECEIPT'],
 				Reader_Revenue_Emails::EMAIL_TYPES['WELCOME'],
 				Reader_Revenue_Emails::EMAIL_TYPES['CANCELLATION'],
+				'group-subscription-invite',
 			],
 			$rr_types,
-			'Reader-revenue rows must follow Reader_Revenue_Emails provider registration order.'
+			'Reader-revenue rows must follow provider registration order.'
 		);
 
 		// Reader-activation group: verification → magic-link → otp →
@@ -406,8 +399,10 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		};
 
 		add_filter( 'newspack_email_configs', $callback );
+		Emails::reset_email_configs_cache();
 		$configs = Emails::get_email_configs();
 		remove_filter( 'newspack_email_configs', $callback );
+		Emails::reset_email_configs_cache();
 
 		$this->assertArrayHasKey( $type, $configs );
 		$this->assertSame( '', $configs[ $type ]['trigger_description'] );
@@ -434,8 +429,10 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		};
 
 		add_filter( 'newspack_email_configs', $callback );
+		Emails::reset_email_configs_cache();
 		$configs = Emails::get_email_configs();
 		remove_filter( 'newspack_email_configs', $callback );
+		Emails::reset_email_configs_cache();
 
 		// Bad rows silently dropped.
 		$this->assertArrayNotHasKey( 'malformed-string', $configs );

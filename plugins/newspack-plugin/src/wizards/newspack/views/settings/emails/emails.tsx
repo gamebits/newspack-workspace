@@ -153,19 +153,38 @@ const Emails = () => {
 
 	// WooCommerce-source rows have a string post_id `wc:{wc_email_id}` —
 	// routed through the slice 2a toggle endpoint, which writes the WC
-	// option directly. Uses useWizardApiFetch for loading-state and
-	// error consistency with the other mutations in this view.
+	// option directly. The endpoint returns the full refreshed payload,
+	// so consume it directly instead of firing a second GET.
 	const toggleWcEmail = ( wcPostId: string, enabled: boolean ) => {
 		resetError();
 		const wcEmailId = wcPostId.replace( /^wc:/, '' );
-		wizardApiFetch(
+		// Optimistic update so the row reflects the intent immediately;
+		// rollback on error.
+		const prev = data;
+		setData(
+			data.map( email =>
+				email.post_id === wcPostId
+					? { ...email, status: enabled ? 'publish' : 'draft' }
+					: email
+			)
+		);
+		wizardApiFetch< EmailSettings >(
 			{
 				path: `/newspack/v1/wizard/newspack-settings/emails/${ wcEmailId }/toggle`,
 				method: 'POST',
 				data: { enabled },
 			},
 			{
-				onSuccess: () => fetchData(),
+				onSuccess( result: EmailSettings ) {
+					// The server response is authoritative for any
+					// downstream state we couldn't predict client-side
+					// (e.g. first-run side effects on sibling rows). Use
+					// it to reconcile state instead of refetching.
+					setData( result.newspack_emails || [] );
+				},
+				onError() {
+					setData( prev );
+				},
 			}
 		);
 	};
