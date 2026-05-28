@@ -221,17 +221,27 @@ class Emails_Section extends Wizard_Section {
 			'reader-activation' => 1,
 		];
 		// `usort` is not stable in PHP — same-category rows can reorder
-		// across requests without a tiebreaker. Use the config type as a
-		// deterministic secondary key so the API output is consistent.
+		// across requests without a tiebreaker. Use the config's
+		// registration order in `$configs` as the secondary key:
+		// providers register in deliberate order (WC: gift emails
+		// adjacent in `WooCommerce_Emails::surfaced_wc_emails()`;
+		// Newspack: receipt → welcome → cancellation in
+		// `Reader_Revenue_Emails`, verification → magic-link → ...
+		// in `Reader_Activation_Emails`), so registration order
+		// equals intended display order. This mirrors the legacy
+		// `array_flip(array_keys($registry))` pattern.
+		$type_order = array_flip( array_keys( $configs ) );
 		usort(
 			$newspack_emails,
-			function ( $a, $b ) use ( $category_order ) {
+			function ( $a, $b ) use ( $category_order, $type_order ) {
 				$order_a = $category_order[ $a['category'] ?? '' ] ?? 2;
 				$order_b = $category_order[ $b['category'] ?? '' ] ?? 2;
 				if ( $order_a !== $order_b ) {
 					return $order_a - $order_b;
 				}
-				return strcmp( (string) ( $a['type'] ?? '' ), (string) ( $b['type'] ?? '' ) );
+				$idx_a = $type_order[ $a['type'] ?? '' ] ?? PHP_INT_MAX;
+				$idx_b = $type_order[ $b['type'] ?? '' ] ?? PHP_INT_MAX;
+				return $idx_a - $idx_b;
 			}
 		);
 

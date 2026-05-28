@@ -147,21 +147,28 @@ class WooCommerce_Emails {
 		if ( ! function_exists( 'WC' ) || ! class_exists( 'WC_Emails' ) ) {
 			return $configs;
 		}
-		$surfaced  = self::surfaced_wc_emails();
-		$wc_emails = \WC()->mailer()->get_emails();
-		foreach ( $wc_emails as $wc_email ) {
-			if ( ! isset( $surfaced[ $wc_email->id ] ) ) {
+		// Iterate the curated allowlist (not `WC()->mailer()->get_emails()`)
+		// so registration order — and thus display order in the wizard —
+		// follows our intentional grouping rather than WC's internal
+		// dispatch order. The mailer is indexed for O(1) instance lookup.
+		$surfaced = self::surfaced_wc_emails();
+		$by_id    = [];
+		foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
+			$by_id[ $wc_email->id ] = $wc_email;
+		}
+		foreach ( $surfaced as $id => $meta ) {
+			if ( ! isset( $by_id[ $id ] ) ) {
 				continue;
 			}
-			$meta = $surfaced[ $wc_email->id ];
+			$wc_email = $by_id[ $id ];
 			if ( ! empty( $meta['plugin_dependency'] ) ) {
 				$plugin_file = $meta['plugin_dependency'] . '/' . $meta['plugin_dependency'] . '.php';
 				if ( ! \Newspack\is_plugin_active( $plugin_file ) ) {
 					continue;
 				}
 			}
-			$configs[ $wc_email->id ] = [
-				'name'                => $wc_email->id,
+			$configs[ $id ] = [
+				'name'                => $id,
 				'category'            => 'woocommerce',
 				'source'              => 'woocommerce',
 				'label'               => $meta['label'],
@@ -170,7 +177,7 @@ class WooCommerce_Emails {
 				'recipient'           => $meta['recipient'],
 				'recommended'         => $meta['recommended'],
 				'chip'                => $meta['chip'],
-				'woo_email_id'        => $wc_email->id,
+				'woo_email_id'        => $id,
 				'plugin_dependency'   => $meta['plugin_dependency'],
 				'wc_email_instance'   => $wc_email,
 			];

@@ -219,6 +219,77 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Within-category tiebreaker is config-registration order, not
+	 * alphabetical. Providers register in deliberate order
+	 * (Reader_Revenue_Emails: receipt → welcome → cancellation;
+	 * Reader_Activation_Emails: verification → magic-link → otp →
+	 * reset-password → ...), so registration order = intended display
+	 * order. Lock that contract in.
+	 */
+	public function test_api_get_email_settings_within_category_follows_registration_order() {
+		$result = Emails_Section::api_get_email_settings();
+
+		// Reader-revenue group: receipt → welcome → cancellation
+		// (per Reader_Revenue_Emails::add_email_configs() order).
+		$rr_types = array_values(
+			array_map(
+				fn( $email ) => $email['type'],
+				array_filter(
+					$result['newspack_emails'],
+					fn( $email ) => 'reader-revenue' === ( $email['category'] ?? '' )
+				)
+			)
+		);
+		$this->assertSame(
+			[
+				Reader_Revenue_Emails::EMAIL_TYPES['RECEIPT'],
+				Reader_Revenue_Emails::EMAIL_TYPES['WELCOME'],
+				Reader_Revenue_Emails::EMAIL_TYPES['CANCELLATION'],
+			],
+			$rr_types,
+			'Reader-revenue rows must follow Reader_Revenue_Emails provider registration order.'
+		);
+
+		// Reader-activation group: verification → magic-link → otp →
+		// reset-password (the four sign-in flows that are always present,
+		// per the order in Reader_Activation_Emails::add_email_configs()).
+		$ra_types_all  = array_values(
+			array_map(
+				fn( $email ) => $email['type'],
+				array_filter(
+					$result['newspack_emails'],
+					fn( $email ) => 'reader-activation' === ( $email['category'] ?? '' )
+				)
+			)
+		);
+		$ra_core_types = array_values(
+			array_filter(
+				$ra_types_all,
+				fn( $type ) => in_array(
+					$type,
+					[
+						Reader_Activation_Emails::EMAIL_TYPES['VERIFICATION'],
+						Reader_Activation_Emails::EMAIL_TYPES['MAGIC_LINK'],
+						Reader_Activation_Emails::EMAIL_TYPES['OTP_AUTH'],
+						Reader_Activation_Emails::EMAIL_TYPES['RESET_PASSWORD'],
+					],
+					true
+				)
+			)
+		);
+		$this->assertSame(
+			[
+				Reader_Activation_Emails::EMAIL_TYPES['VERIFICATION'],
+				Reader_Activation_Emails::EMAIL_TYPES['MAGIC_LINK'],
+				Reader_Activation_Emails::EMAIL_TYPES['OTP_AUTH'],
+				Reader_Activation_Emails::EMAIL_TYPES['RESET_PASSWORD'],
+			],
+			$ra_core_types,
+			'Reader-activation rows must follow Reader_Activation_Emails provider registration order.'
+		);
+	}
+
+	/**
 	 * Sort order: reader-revenue first, then reader-activation, then everything else.
 	 */
 	public function test_api_get_email_settings_sort_order() {

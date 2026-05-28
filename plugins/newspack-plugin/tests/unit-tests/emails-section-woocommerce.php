@@ -187,6 +187,102 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		$this->assertSame( 'publish', $rows[0]['status'], 'enabled=yes should serialize to status=publish.' );
 	}
 
+	/**
+	 * WC rows surface in `WooCommerce_Emails::surfaced_wc_emails()`
+	 * registration order — NOT alphabetical by config key. The allowlist
+	 * is hand-ordered to group semantically-related emails together
+	 * (specifically, the gift pair: 'New giftee account' and
+	 * 'New gift order' must be adjacent). This locks in the curated
+	 * grouping against accidental regressions to alphabetical sorting.
+	 */
+	public function test_api_get_email_settings_wc_rows_follow_registration_order() {
+		// Stub the full allowlist in its registration order so the test
+		// matches the contract of `surfaced_wc_emails()` even when real WC
+		// isn't loaded (no `function_exists('WC')` in this env, so the
+		// real loop in `WooCommerce_Emails::get_email_configs()` bails).
+		$expected_order = [
+			'customer_notification_auto_renewal', // Renewal reminder
+			'customer_payment_retry',             // Failed order retry
+			'expired_subscription',               // Subscription expired
+			'customer_completed_switch_order',    // Subscription switch complete
+			'WCSG_Email_Customer_New_Account',    // New giftee account ─┐
+			'recipient_completed_order',          // New gift order      ┘ adjacent
+			'customer_new_account',               // New account
+			'customer_refunded_order',            // Order refund
+			'new_order',                          // New order
+		];
+		// Register stubs in chip='reader-revenue' (except customer_new_account
+		// which is auth-account in real life — keep it that way so the
+		// test mirrors production chip assignment).
+		$auth_account_id = 'customer_new_account';
+		foreach ( $expected_order as $id ) {
+			$this->register_stub_wc_config(
+				new Newspack_Test_Stub_WC_Email( $id, 'yes' ),
+				[
+					'chip' => $auth_account_id === $id ? 'auth-account' : 'reader-revenue',
+				]
+			);
+		}
+
+		$result   = Emails_Section::api_get_email_settings();
+		$wc_types = array_values(
+			array_map(
+				fn( $email ) => $email['type'],
+				array_filter(
+					$result['newspack_emails'],
+					fn( $email ) => 'woocommerce' === ( $email['source'] ?? 'newspack' )
+				)
+			)
+		);
+
+		$this->assertSame(
+			$expected_order,
+			$wc_types,
+			'WC rows must surface in surfaced_wc_emails() registration order, not alphabetical.'
+		);
+	}
+
+	/**
+	 * Specifically: the gift-pair (`New giftee account` /
+	 * `New gift order`) must be adjacent. Pre-fix they were max
+	 * distance apart because `strcmp` put `WCSG_...` first (uppercase)
+	 * and `recipient_completed_order` last.
+	 */
+	public function test_api_get_email_settings_wc_gift_pair_is_adjacent() {
+		// Register only the two stubs that matter — both share
+		// chip='reader-revenue' in production.
+		$this->register_stub_wc_config(
+			new Newspack_Test_Stub_WC_Email( 'WCSG_Email_Customer_New_Account', 'yes' )
+		);
+		$this->register_stub_wc_config(
+			new Newspack_Test_Stub_WC_Email( 'recipient_completed_order', 'yes' )
+		);
+
+		$result = Emails_Section::api_get_email_settings();
+		$types  = array_values(
+			array_map(
+				fn( $email ) => $email['type'],
+				array_filter(
+					$result['newspack_emails'],
+					fn( $email ) => in_array(
+						$email['type'] ?? '',
+						[ 'WCSG_Email_Customer_New_Account', 'recipient_completed_order' ],
+						true
+					)
+				)
+			)
+		);
+
+		$this->assertCount( 2, $types );
+		$idx_giftee = array_search( 'WCSG_Email_Customer_New_Account', $types, true );
+		$idx_gift   = array_search( 'recipient_completed_order', $types, true );
+		$this->assertSame(
+			1,
+			abs( $idx_giftee - $idx_gift ),
+			'New giftee account and New gift order must be adjacent in the response.'
+		);
+	}
+
 	/*
 	 * ------------------------------------------------------------------
 	 * Bucket F.3 — api_toggle_wc_email
