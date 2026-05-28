@@ -513,6 +513,19 @@ class Email_Preview {
 			);
 		}
 
+		// Don't preview trashed or auto-draft posts — they shouldn't be
+		// reachable from the wizard's surfaced list, and previewing them
+		// leaks their stored HTML through the endpoint. `manage_options`
+		// gates this so the leak is admin-only, but the allowlist keeps
+		// the endpoint scoped to publish-track statuses anyway.
+		if ( ! in_array( $post->post_status, [ 'publish', 'draft', 'pending' ], true ) ) {
+			return new \WP_Error(
+				'newspack_email_preview_not_found',
+				__( 'Email not found.', 'newspack-plugin' ),
+				[ 'status' => 404 ]
+			);
+		}
+
 		if ( 'woo_email' === $post->post_type ) {
 			$html = self::get_wc_preview_html( $post_id );
 		} elseif ( Emails::POST_TYPE === $post->post_type ) {
@@ -565,19 +578,23 @@ class Email_Preview {
 			return false;
 		}
 
-		// Resolve email ID → class name via the mailer's registered emails.
-		$wc_email_class = null;
-		foreach ( \WC()->mailer()->get_emails() as $class_name => $instance ) {
-			if ( $instance->id === $wc_email_id ) {
-				$wc_email_class = $class_name;
-				break;
-			}
-		}
-		if ( ! $wc_email_class ) {
-			return false;
-		}
-
+		// Wrap the WC interactions (mailer lookup, preview instantiation,
+		// render) in a single try so a throw at any step — including a
+		// shim `\WC()` whose `mailer()` doesn't behave like the real one
+		// — degrades to the logged-false return instead of bubbling.
 		try {
+			// Resolve email ID → class name via the mailer's registered emails.
+			$wc_email_class = null;
+			foreach ( \WC()->mailer()->get_emails() as $class_name => $instance ) {
+				if ( $instance->id === $wc_email_id ) {
+					$wc_email_class = $class_name;
+					break;
+				}
+			}
+			if ( ! $wc_email_class ) {
+				return false;
+			}
+
 			$preview = $preview_class::instance();
 			$preview->set_email_type( $wc_email_class );
 			return $preview->render();

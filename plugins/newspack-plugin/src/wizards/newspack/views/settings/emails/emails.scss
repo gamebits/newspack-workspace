@@ -89,9 +89,13 @@
 	border-radius: 4px;
 	text-decoration: none;
 
+	// Matches the design-system canonical `outline: 2px solid;
+	// outline-offset: 1px;` used by the sibling .newspack-emails__name-link.
+	// Consistency over tile-size customisation — both anchors in this
+	// view get the same focus treatment.
 	&:focus-visible {
 		outline: 2px solid;
-		outline-offset: 2px;
+		outline-offset: 1px;
 	}
 }
 
