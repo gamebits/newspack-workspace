@@ -5,7 +5,7 @@
 /**
  * WordPress dependencies.
  */
-import { __ } from '@wordpress/i18n';
+import { __, sprintf } from '@wordpress/i18n';
 import { useState, useEffect, useCallback, useMemo, Fragment } from '@wordpress/element';
 import { filterSortAndPaginate } from '@wordpress/dataviews';
 import type { Action, Field, View } from '@wordpress/dataviews';
@@ -17,6 +17,7 @@ import { Button } from '@wordpress/components';
 import { Badge, DataViews, Notice, utils } from '../../../../../../packages/components/src';
 import WizardsPluginCard from '../../../../wizards-plugin-card';
 import { useWizardApiFetch } from '../../../../hooks/use-wizard-api-fetch';
+import EmailPreview from './email-preview';
 import './emails.scss';
 
 interface EmailItem {
@@ -26,6 +27,12 @@ interface EmailItem {
 	// The activate/deactivate action callbacks branch on `typeof` to route
 	// the write through the correct endpoint.
 	post_id: number | string;
+	// Preview identifier the EmailPreview component sends to the
+	// /preview endpoint. Newspack rows don't emit this — the field
+	// render falls back to post_id. WC rows emit either an integer
+	// (block-editor template post) or a `wc:{id}` string (classic
+	// template) via the smart fallback in serialize_wc_email_row.
+	preview_id?: number | string | null;
 	edit_link: string;
 	status: string;
 	type: string;
@@ -54,6 +61,9 @@ const DEFAULT_VIEW: View = {
 	layout: {},
 	titleField: 'name',
 	descriptionField: 'trigger_description',
+	// v14 grid layout resolves this to find the field by id and
+	// render it as the card's media tile (top of each card).
+	mediaField: 'preview',
 };
 
 const PageHeading = () => <h1 className="screen-reader-text">{ __( 'Emails', 'newspack-plugin' ) }</h1>;
@@ -199,6 +209,41 @@ const Emails = () => {
 
 	const fields: Field< EmailItem >[] = useMemo(
 		() => [
+			{
+				id: 'preview',
+				label: __( 'Preview', 'newspack-plugin' ),
+				type: 'media',
+				enableSorting: false,
+				enableHiding: true,
+				render: ( { item }: { item: EmailItem } ) => {
+					// Smart fallback: WC rows emit `preview_id` via
+					// serialize_wc_email_row (integer block-template post ID
+					// or `wc:{id}` string). Newspack rows don't emit it —
+					// they use their own integer post_id as the preview id
+					// (the REST endpoint routes by post_type).
+					const previewId = item.preview_id ?? ( typeof item.post_id === 'number' ? item.post_id : null );
+					if ( ! previewId ) {
+						return null;
+					}
+					// aria-label gives the anchor an accessible name —
+					// the iframe inside has tabIndex=-1 and only a
+					// generic "Email preview" title, so the wrapper
+					// anchor is what assistive tech announces.
+					return (
+						<a
+							href={ item.edit_link }
+							className="newspack-emails__preview-link"
+							aria-label={ sprintf(
+								/* translators: %s: email label. */
+								__( 'Edit %s', 'newspack-plugin' ),
+								item.label
+							) }
+						>
+							<EmailPreview postId={ previewId } />
+						</a>
+					);
+				},
+			},
 			{
 				id: 'name',
 				label: __( 'Email', 'newspack-plugin' ),

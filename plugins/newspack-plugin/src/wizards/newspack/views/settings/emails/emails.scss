@@ -75,6 +75,26 @@
 	}
 }
 
+// Preview-tile anchor — wraps the EmailPreview iframe in the
+// DataViews media slot. Clicking the tile navigates to the email's
+// edit page (mirrors the title link).
+//
+// The anchor needs a visible focus ring even though its child is an
+// iframe with `pointer-events: none` and `tabIndex=-1` — the anchor
+// is the only keyboard-navigable element in this tile, and assistive
+// tech reads its aria-label ("Edit {email label}"). Without a focus
+// ring, keyboard users can't tell when the tile is focused.
+.newspack-emails-tab .newspack-emails__preview-link {
+	display: block;
+	border-radius: 4px;
+	text-decoration: none;
+
+	&:focus-visible {
+		outline: 2px solid;
+		outline-offset: 2px;
+	}
+}
+
 // Clickable name link in grid/table view.
 // Scope under `.newspack-emails-tab` (2-class specificity) so the rule
 // wins against WP's default `a` link color, which would otherwise paint
