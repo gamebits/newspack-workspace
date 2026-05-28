@@ -3,13 +3,7 @@
 /**
  * External dependencies
  */
-import {
-	render,
-	screen,
-	waitFor,
-	fireEvent,
-	act,
-} from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 jest.mock( './emails.scss', () => ( {} ) );
 
@@ -33,7 +27,7 @@ jest.mock( '@wordpress/icons', () => ( {
 } ) );
 
 jest.mock( '@wordpress/dataviews', () => ( {
-	filterSortAndPaginate: ( data ) => ( {
+	filterSortAndPaginate: data => ( {
 		data,
 		paginationInfo: { totalItems: data.length, totalPages: 1 },
 	} ),
@@ -67,10 +61,8 @@ jest.mock( '../../../../../../packages/components/src', () => {
 					<tbody>
 						{ data.map( ( item, i ) => (
 							<tr key={ i }>
-								{ fields.map( ( field ) => (
-									<td key={ field.id }>
-										{ renderField( field, item ) }
-									</td>
+								{ fields.map( field => (
+									<td key={ field.id }>{ renderField( field, item ) }</td>
 								) ) }
 							</tr>
 						) ) }
@@ -79,9 +71,7 @@ jest.mock( '../../../../../../packages/components/src', () => {
 			);
 		},
 		Card: ( { children } ) => <div data-testid="card">{ children }</div>,
-		Notice: ( { noticeText } ) => (
-			<div data-testid="notice">{ noticeText }</div>
-		),
+		Notice: ( { noticeText } ) => <div data-testid="notice">{ noticeText }</div>,
 		utils: {
 			confirmAction: jest.fn( () => true ),
 		},
@@ -132,8 +122,7 @@ const mockEmails = [
 		status: 'publish',
 		type: 'reader-activation-verification',
 		category: 'reader-activation',
-		trigger_description:
-			'Sent when a reader needs to verify their email address.',
+		trigger_description: 'Sent when a reader needs to verify their email address.',
 		registry_slug: 'reader-activation-verification',
 		recipient: 'reader',
 		source: 'newspack',
@@ -146,8 +135,7 @@ const mockEmails = [
 		status: 'draft',
 		type: 'reader-activation-delete-account',
 		category: 'reader-activation',
-		trigger_description:
-			'Sent when a reader requests to delete their account.',
+		trigger_description: 'Sent when a reader requests to delete their account.',
 		registry_slug: 'reader-activation-delete-account',
 		recipient: 'reader',
 		source: 'newspack',
@@ -160,8 +148,7 @@ const mockEmails = [
 		status: 'draft',
 		type: 'welcome',
 		category: 'reader-revenue',
-		trigger_description:
-			'Sent to new supporters after their first payment.',
+		trigger_description: 'Sent to new supporters after their first payment.',
 		registry_slug: 'welcome',
 		recipient: 'reader',
 		source: 'newspack',
@@ -172,8 +159,7 @@ const mockEmails = [
 	{
 		label: 'New order',
 		post_id: 'wc:new_order',
-		edit_link:
-			'/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_new_order',
+		edit_link: '/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_new_order',
 		status: 'publish',
 		type: 'new_order',
 		category: 'woocommerce',
@@ -188,8 +174,7 @@ const mockEmails = [
 	{
 		label: 'New account',
 		post_id: 'wc:customer_new_account',
-		edit_link:
-			'/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_customer_new_account',
+		edit_link: '/wp-admin/admin.php?page=wc-settings&tab=email&section=wc_email_customer_new_account',
 		status: 'draft',
 		type: 'customer_new_account',
 		category: 'woocommerce',
@@ -223,9 +208,7 @@ describe( 'Emails', () => {
 			},
 		};
 		mockWizardApiFetch.mockImplementation( ( opts, callbacks ) => {
-			if (
-				opts.path === '/newspack/v1/wizard/newspack-settings/emails'
-			) {
+			if ( opts.path === '/newspack/v1/wizard/newspack-settings/emails' ) {
 				callbacks?.onSuccess?.( {
 					newspack_emails: mockEmails,
 					post_type: 'newspack_rr_email',
@@ -242,20 +225,14 @@ describe( 'Emails', () => {
 		// Default chip is reader-revenue — these rows are visible.
 		await waitFor( () => {
 			expect( screen.getByText( 'Payment receipt' ) ).toBeInTheDocument();
-			expect(
-				screen.getByText( 'Cancellation confirmation' )
-			).toBeInTheDocument();
+			expect( screen.getByText( 'Cancellation confirmation' ) ).toBeInTheDocument();
 			expect( screen.getByText( 'Welcome email' ) ).toBeInTheDocument();
 			expect( screen.getByText( 'New order' ) ).toBeInTheDocument();
 		} );
 
 		// Auth-account rows are filtered out by default.
-		expect(
-			screen.queryByText( 'Reader verification' )
-		).not.toBeInTheDocument();
-		expect(
-			screen.queryByText( 'Account deletion' )
-		).not.toBeInTheDocument();
+		expect( screen.queryByText( 'Reader verification' ) ).not.toBeInTheDocument();
+		expect( screen.queryByText( 'Account deletion' ) ).not.toBeInTheDocument();
 		expect( screen.queryByText( 'New account' ) ).not.toBeInTheDocument();
 	} );
 
@@ -292,9 +269,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const deactivate = mockCapturedActions.find(
-			( a ) => a.id === 'deactivate'
-		);
+		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
 		deactivate.callback( [ mockEmails[ 0 ] ] );
 
 		expect( mockWizardApiFetch ).toHaveBeenCalledWith(
@@ -317,9 +292,7 @@ describe( 'Emails', () => {
 
 		await waitFor( () => {
 			expect( screen.getByTestId( 'notice' ) ).toBeInTheDocument();
-			expect( screen.getByTestId( 'notice' ) ).toHaveTextContent(
-				'Something went wrong'
-			);
+			expect( screen.getByTestId( 'notice' ) ).toHaveTextContent( 'Something went wrong' );
 		} );
 	} );
 
@@ -331,9 +304,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const activate = mockCapturedActions.find(
-			( a ) => a.id === 'activate'
-		);
+		const activate = mockCapturedActions.find( a => a.id === 'activate' );
 		// mockEmails[4] (Welcome email) is newspack + reader-revenue + draft —
 		// actually eligible for activate (category !== 'reader-activation').
 		// Verifies the callback wiring on an item that would pass `isEligible`.
@@ -360,12 +331,8 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const deactivate = mockCapturedActions.find(
-			( a ) => a.id === 'deactivate'
-		);
-		const activate = mockCapturedActions.find(
-			( a ) => a.id === 'activate'
-		);
+		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
+		const activate = mockCapturedActions.find( a => a.id === 'activate' );
 
 		// Reader-activation emails cannot be toggled.
 		expect( deactivate.isEligible( mockEmails[ 2 ] ) ).toBe( false );
@@ -376,9 +343,7 @@ describe( 'Emails', () => {
 	} );
 
 	it( 'reset action calls wizardApiFetch with DELETE after confirmation', async () => {
-		const {
-			utils,
-		} = require( '../../../../../../packages/components/src' );
+		const { utils } = require( '../../../../../../packages/components/src' );
 		const Emails = require( './emails' ).default;
 		render( <Emails /> );
 
@@ -386,7 +351,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const reset = mockCapturedActions.find( ( a ) => a.id === 'reset' );
+		const reset = mockCapturedActions.find( a => a.id === 'reset' );
 		reset.callback( [ mockEmails[ 0 ] ] );
 
 		expect( utils.confirmAction ).toHaveBeenCalled();
@@ -410,13 +375,11 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const reset = mockCapturedActions.find( ( a ) => a.id === 'reset' );
+		const reset = mockCapturedActions.find( a => a.id === 'reset' );
 		// Newspack-source email with registry_slug — eligible.
 		expect( reset.isEligible( mockEmails[ 0 ] ) ).toBe( true );
 		// Same email without registry_slug — not eligible.
-		expect(
-			reset.isEligible( { ...mockEmails[ 0 ], registry_slug: '' } )
-		).toBe( false );
+		expect( reset.isEligible( { ...mockEmails[ 0 ], registry_slug: '' } ) ).toBe( false );
 	} );
 
 	// Slice 2a — WC surfacing tests below.
@@ -429,7 +392,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const reset = mockCapturedActions.find( ( a ) => a.id === 'reset' );
+		const reset = mockCapturedActions.find( a => a.id === 'reset' );
 		// WC-source row — source guard rejects, even with registry_slug present.
 		expect( reset.isEligible( mockEmails[ 5 ] ) ).toBe( false );
 		// And again with the auth-account WC row.
@@ -444,9 +407,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const deactivate = mockCapturedActions.find(
-			( a ) => a.id === 'deactivate'
-		);
+		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
 		// WC row is publish + category !== reader-activation → eligible.
 		expect( deactivate.isEligible( mockEmails[ 5 ] ) ).toBe( true );
 		deactivate.callback( [ mockEmails[ 5 ] ] );
@@ -480,9 +441,7 @@ describe( 'Emails', () => {
 			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
 		} );
 
-		const activate = mockCapturedActions.find(
-			( a ) => a.id === 'activate'
-		);
+		const activate = mockCapturedActions.find( a => a.id === 'activate' );
 		// WC draft row → eligible for activate.
 		expect( activate.isEligible( mockEmails[ 6 ] ) ).toBe( true );
 		activate.callback( [ mockEmails[ 6 ] ] );
@@ -507,37 +466,23 @@ describe( 'Emails', () => {
 		await waitFor( () => {
 			expect( screen.getByText( 'Payment receipt' ) ).toBeInTheDocument();
 		} );
-		expect(
-			screen.queryByText( 'Reader verification' )
-		).not.toBeInTheDocument();
+		expect( screen.queryByText( 'Reader verification' ) ).not.toBeInTheDocument();
 		expect( screen.queryByText( 'New account' ) ).not.toBeInTheDocument();
 
 		// Switch chip — auth-account rows now visible, reader-revenue rows hidden.
-		fireEvent.click(
-			screen.getByRole( 'button', { name: 'Authentication & account' } )
-		);
+		fireEvent.click( screen.getByRole( 'button', { name: 'Authentication & account' } ) );
 
 		await waitFor( () => {
-			expect(
-				screen.getByText( 'Reader verification' )
-			).toBeInTheDocument();
-			expect(
-				screen.getByText( 'Account deletion' )
-			).toBeInTheDocument();
+			expect( screen.getByText( 'Reader verification' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Account deletion' ) ).toBeInTheDocument();
 			expect( screen.getByText( 'New account' ) ).toBeInTheDocument();
 		} );
-		expect(
-			screen.queryByText( 'Payment receipt' )
-		).not.toBeInTheDocument();
-		expect(
-			screen.queryByText( 'Cancellation confirmation' )
-		).not.toBeInTheDocument();
+		expect( screen.queryByText( 'Payment receipt' ) ).not.toBeInTheDocument();
+		expect( screen.queryByText( 'Cancellation confirmation' ) ).not.toBeInTheDocument();
 		expect( screen.queryByText( 'New order' ) ).not.toBeInTheDocument();
 
 		// The DataViews input is also chip-filtered before filterSortAndPaginate.
-		expect(
-			mockCapturedData.every( ( item ) => item.chip === 'auth-account' )
-		).toBe( true );
+		expect( mockCapturedData.every( item => item.chip === 'auth-account' ) ).toBe( true );
 	} );
 
 	it( 'chip switch resets search and page', async () => {
@@ -563,9 +508,7 @@ describe( 'Emails', () => {
 		} );
 
 		// Click the other chip — selectChip() resets search and page.
-		fireEvent.click(
-			screen.getByRole( 'button', { name: 'Authentication & account' } )
-		);
+		fireEvent.click( screen.getByRole( 'button', { name: 'Authentication & account' } ) );
 
 		await waitFor( () => {
 			expect( mockCapturedView.search ).toBe( '' );
@@ -582,9 +525,7 @@ describe( 'Emails', () => {
 		} );
 
 		// Default (no search): chip filter active, reader-revenue only.
-		expect(
-			mockCapturedData.every( ( item ) => item.chip === 'reader-revenue' )
-		).toBe( true );
+		expect( mockCapturedData.every( item => item.chip === 'reader-revenue' ) ).toBe( true );
 		expect( mockCapturedData.length ).toBe( 4 );
 
 		// Activate search via the DataViews onChangeView prop.
@@ -601,12 +542,8 @@ describe( 'Emails', () => {
 		await waitFor( () => {
 			expect( mockCapturedData.length ).toBe( mockEmails.length );
 		} );
-		const chipsRepresented = new Set(
-			mockCapturedData.map( ( item ) => item.chip )
-		);
-		expect( chipsRepresented ).toEqual(
-			new Set( [ 'reader-revenue', 'auth-account' ] )
-		);
+		const chipsRepresented = new Set( mockCapturedData.map( item => item.chip ) );
+		expect( chipsRepresented ).toEqual( new Set( [ 'reader-revenue', 'auth-account' ] ) );
 	} );
 
 	it( 'chip bar shows both chips unpressed during active search', async () => {
@@ -659,11 +596,7 @@ describe( 'Emails', () => {
 			} );
 		} );
 		await waitFor( () => {
-			expect(
-				screen
-					.getByRole( 'button', { name: 'Reader revenue' } )
-					.getAttribute( 'aria-pressed' )
-			).toBe( 'false' );
+			expect( screen.getByRole( 'button', { name: 'Reader revenue' } ).getAttribute( 'aria-pressed' ) ).toBe( 'false' );
 		} );
 
 		// Clear search — activeChip (still 'reader-revenue') re-engages.
@@ -675,11 +608,7 @@ describe( 'Emails', () => {
 			} );
 		} );
 		await waitFor( () => {
-			expect(
-				screen
-					.getByRole( 'button', { name: 'Reader revenue' } )
-					.getAttribute( 'aria-pressed' )
-			).toBe( 'true' );
+			expect( screen.getByRole( 'button', { name: 'Reader revenue' } ).getAttribute( 'aria-pressed' ) ).toBe( 'true' );
 		} );
 	} );
 } );

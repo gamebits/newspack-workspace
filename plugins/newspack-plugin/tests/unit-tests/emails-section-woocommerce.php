@@ -1,4 +1,4 @@
-<?php
+<?php // phpcs:disable WordPress.Files.FileName.InvalidClassFileName, Generic.Files.OneObjectStructurePerFile.MultipleFound, Squiz.Commenting.ClassComment.WrongStyle, Squiz.Commenting.InlineComment.InvalidEndChar, Squiz.Commenting.VariableComment.Missing, Squiz.Commenting.FunctionComment.Missing -- Test file intentionally declares a WooCommerce class shim and a WC_Email-like stub alongside the main test class; precedent: tests/unit-tests/reader-registration-endpoint.php and tests/mocks/*.
 /**
  * Slice 2a (NPPD-1527) — WooCommerce email surfacing.
  *
@@ -29,8 +29,6 @@
  * @package Newspack\Tests
  */
 
-// phpcs:disable Generic.Files.OneObjectStructurePerFile.MultipleFound, Squiz.Commenting.ClassComment.Missing, Squiz.Commenting.VariableComment.Missing, Squiz.Commenting.FunctionComment.Missing
-
 if ( ! class_exists( 'WooCommerce' ) ) {
 	// Shim — only declared when real WC isn't loaded. Empty body is fine;
 	// Emails_Section guards use `class_exists('WooCommerce')` as a boolean.
@@ -55,8 +53,6 @@ class Newspack_Test_Stub_WC_Email {
 		return 'woocommerce_' . $this->id . '_settings';
 	}
 }
-
-// phpcs:enable Generic.Files.OneObjectStructurePerFile.MultipleFound, Squiz.Commenting.ClassComment.Missing, Squiz.Commenting.VariableComment.Missing, Squiz.Commenting.FunctionComment.Missing
 
 use Newspack\Emails;
 use Newspack\Wizards\Newspack\Emails_Section;
