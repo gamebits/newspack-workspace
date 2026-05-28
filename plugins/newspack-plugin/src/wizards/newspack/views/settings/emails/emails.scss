@@ -21,16 +21,20 @@
 // reads as unmoored — sitting at the section padding edge while the
 // DataViews controls are inset another 24px.
 //
-// Vertical: `margin-bottom: 16px` exactly cancels the `-16px` pull-up
-// the Newspack DataViews wrapper applies in full-width contexts (see
-// packages/components/src/dataviews/style.scss). Anything smaller and
-// DataViews' background overlaps the bottom of the chip pills and
-// clips them. Internal `view-actions` padding-top (16px) provides the
-// visible gap between chips and the search row.
+// Vertical: the Newspack DataViews wrapper applies `margin-top: -16px`
+// in full-width contexts (see packages/components/src/dataviews/style.scss).
+// Exactly cancelling it (margin-bottom: 16px) makes the chip bar's
+// bottom edge share a y-coordinate with the wrapper's top edge — at
+// which point the wrapper's background paints over the bottom border
+// of the selected chip pill, clipping its outline visually. Use 24px
+// so 8px of positive gap remains between chip-bar bottom and wrapper
+// top after the pull-up resolves (24 + -16 = 8). Visible gap to the
+// search row inside DataViews is 24px (8 + view-actions padding-top
+// of 16px).
 .newspack-emails__chips {
 	display: flex;
 	gap: 8px;
-	margin-bottom: 16px;
+	margin-bottom: 24px;
 	padding: 0 24px;
 
 	// Nested for specificity over WP Button defaults — without the
