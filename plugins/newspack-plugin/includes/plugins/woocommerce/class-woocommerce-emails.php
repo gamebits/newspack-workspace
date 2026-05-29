@@ -173,6 +173,21 @@ class WooCommerce_Emails {
 		if ( ! function_exists( 'WC' ) || ! class_exists( 'WC_Emails' ) ) {
 			return $configs;
 		}
+
+		// Force WC's mailer to bootstrap before iterating surfaced emails.
+		// Without this, depending on whether WC's block-based-emails
+		// alpha feature is enabled, `WC_Email` may not be loaded yet at
+		// the point this filter callback runs (e.g. via
+		// `maybe_first_run_enable_wc_emails` on admin_init). With the
+		// alpha off, the WCS autoloader pulling in a subclass that
+		// extends `WC_Email` would fatal (`Class "WC_Email" not found`).
+		// `WC()->mailer()` is a singleton — it loads `WC_Email` and all
+		// registered email classes (including WCS) idempotently. Cheap
+		// on subsequent calls, safe to call early.
+		if ( method_exists( WC(), 'mailer' ) ) {
+			WC()->mailer();
+		}
+
 		foreach ( self::surfaced_wc_emails() as $id => $meta ) {
 			// Gate on whether the WC_Email subclass is loaded rather than
 			// looking up the plugin file in `active_plugins` — the latter
@@ -180,7 +195,13 @@ class WooCommerce_Emails {
 			// `plugin_dependency` plugin (e.g. WooCommerce Subscriptions)
 			// is listed in `active_sitewide_plugins` instead. The class
 			// presence check works regardless of activation scope.
-			if ( ! class_exists( $meta['class'] ) ) {
+			//
+			// `$autoload = false` is defensive: we've already forced the
+			// mailer to bootstrap above, but if any future caller invokes
+			// this method before WC is fully loaded, the autoload-off
+			// check fails closed (skip) instead of fatal (autoload pulls
+			// a `WC_Email` subclass before its parent is available).
+			if ( ! class_exists( $meta['class'], false ) ) {
 				continue;
 			}
 			$configs[ $id ] = [
