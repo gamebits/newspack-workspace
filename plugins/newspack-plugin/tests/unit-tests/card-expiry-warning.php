@@ -415,4 +415,272 @@ class Newspack_Test_Card_Expiry_Warning extends WP_UnitTestCase {
 		$this->assertTrue( $bypass_param->isDefaultValueAvailable(), '$bypass_idempotency must have a default value.' );
 		$this->assertFalse( $bypass_param->getDefaultValue(), '$bypass_idempotency default MUST be false to keep the cron path unchanged.' );
 	}
+
+	// --------------------------------------------------------------------
+	// Two-meta-keys-per-token schema (NPPD-1568) — locks in the gating
+	// + clear behavior that fixes the multi-token collision (Fix-1) and
+	// the CLI cross-invocation duplicate-send bug (Fix-2). The full
+	// promote invariant (SEEDED deleted when SENT writes) needs a real
+	// Emails::send_email path and is covered end-to-end in scenario 8 of
+	// tests/integration/card-expiry-warning-smoke.php.
+	// --------------------------------------------------------------------
+
+	/**
+	 * Helper: invoke the private `is_already_processed` gating helper.
+	 *
+	 * Tests verify the per-token gating behavior directly rather than
+	 * driving `maybe_send_warning` end-to-end (which would require
+	 * mocking out the full subscription → user → WC URL → wp_mail
+	 * chain — the smoke script covers that). Reflection is the standard
+	 * PHPUnit pattern for testing private helpers when the helper is
+	 * the design center and direct testing is cleaner than driving via
+	 * the caller.
+	 *
+	 * @param object $subscription       Mock subscription supporting `get_meta`.
+	 * @param int    $token_id           Token id (suffix of the meta key).
+	 * @param string $expiry_key         Value to match against (`token_id:MM/YYYY`).
+	 * @param bool   $bypass_idempotency When true, ignore SEEDED gate.
+	 * @return bool
+	 */
+	private function invoke_is_already_processed( $subscription, int $token_id, string $expiry_key, bool $bypass_idempotency = false ): bool {
+		$reflection = new ReflectionMethod( Card_Expiry_Warning::class, 'is_already_processed' );
+		$reflection->setAccessible( true );
+		return $reflection->invoke( null, $subscription, $token_id, $expiry_key, $bypass_idempotency );
+	}
+
+	/**
+	 * Helper: build a minimal subscription stub that supports get_meta /
+	 * update_meta_data / delete_meta_data / save / get_meta_data — the
+	 * subset of WC_Data the schema and clear_sent_flag exercise.
+	 *
+	 * In-memory only; doesn't touch the DB.
+	 *
+	 * @param array<string, string> $initial Initial meta as key => value.
+	 * @return object
+	 */
+	private function make_subscription_stub( array $initial = [] ) {
+		return new class( $initial ) {
+			/**
+			 * Internal meta storage keyed by meta_key.
+			 *
+			 * @var array<string, string>
+			 */
+			private $meta = [];
+
+			/**
+			 * Constructor.
+			 *
+			 * @param array<string, string> $initial Initial meta.
+			 */
+			public function __construct( array $initial ) {
+				$this->meta = $initial;
+			}
+			/**
+			 * Get a single meta value.
+			 *
+			 * @param string $key    Meta key.
+			 * @param bool   $single Single value flag (ignored — always single).
+			 * @return string Stored value or '' if absent.
+			 */
+			public function get_meta( $key, $single = true ) {
+				return $this->meta[ $key ] ?? '';
+			}
+			/**
+			 * Set a meta value.
+			 *
+			 * @param string $key   Meta key.
+			 * @param mixed  $value Meta value.
+			 */
+			public function update_meta_data( $key, $value ) {
+				$this->meta[ $key ] = $value;
+			}
+			/**
+			 * Delete a meta key.
+			 *
+			 * @param string $key Meta key.
+			 */
+			public function delete_meta_data( $key ) {
+				unset( $this->meta[ $key ] );
+			}
+			/**
+			 * Iterable meta-data view used by `clear_sent_flag`.
+			 *
+			 * @return array<object> Objects with `key` + `value` public properties.
+			 */
+			public function get_meta_data() {
+				$out = [];
+				foreach ( $this->meta as $k => $v ) {
+					$out[] = (object) [
+						'key'   => $k,
+						'value' => $v,
+					];
+				}
+				return $out;
+			}
+			/**
+			 * No-op stand-in for WC's CRUD save().
+			 *
+			 * @return bool
+			 */
+			public function save() {
+				return true;
+			}
+		};
+	}
+
+	/**
+	 * Fix-1 lock-in (multi-token independence):
+	 *
+	 * SEEDED meta for token 100 must NOT gate token 200 on the same
+	 * subscription. The legacy single-key shape collapsed all tokens
+	 * onto one meta value — re-introducing the single key would cause
+	 * this test to fail because the second token's gate would return
+	 * true based on the first token's seed mark.
+	 */
+	public function test_multi_token_subscription_seeds_independently() {
+		// Seed token 100 only; leave token 200 unmarked.
+		$sub = $this->make_subscription_stub(
+			[
+				Card_Expiry_Warning::SEEDED_META_PREFIX . 100 => '100:12/2026',
+			]
+		);
+
+		$blocked_100 = $this->invoke_is_already_processed( $sub, 100, '100:12/2026', false );
+		$blocked_200 = $this->invoke_is_already_processed( $sub, 200, '200:12/2026', false );
+
+		$this->assertTrue( $blocked_100, 'Token 100 must be gated by its own SEEDED meta.' );
+		$this->assertFalse( $blocked_200, 'Token 200 must NOT be gated by token 100\'s SEEDED meta — multi-token independence.' );
+	}
+
+	/**
+	 * Fix-1 lock-in (post-seed scan path):
+	 *
+	 * After the seed pass marks both tokens on a multi-token
+	 * subscription, a normal scan (no bypass) must skip BOTH tokens.
+	 * Without per-token keys, only the last-iterated token would have
+	 * a surviving mark — earlier tokens would be re-sent.
+	 */
+	public function test_multi_token_subscription_scans_independently_post_seed() {
+		$sub = $this->make_subscription_stub(
+			[
+				Card_Expiry_Warning::SEEDED_META_PREFIX . 100 => '100:12/2026',
+				Card_Expiry_Warning::SEEDED_META_PREFIX . 200 => '200:01/2027',
+			]
+		);
+
+		// Normal scan = no bypass; SEEDED gate active for both.
+		$this->assertTrue(
+			$this->invoke_is_already_processed( $sub, 100, '100:12/2026', false ),
+			'Token 100 should be gated post-seed.'
+		);
+		$this->assertTrue(
+			$this->invoke_is_already_processed( $sub, 200, '200:01/2027', false ),
+			'Token 200 should be gated post-seed.'
+		);
+	}
+
+	/**
+	 * Fix-2 lock-in (CLI cross-invocation idempotency):
+	 *
+	 * The CLI backfill calls `maybe_send_warning(..., $bypass=true)`.
+	 * Bypass skips the SEEDED gate (so seed-suppressed warnings can be
+	 * released) but the SENT gate MUST still block — otherwise a
+	 * second operator invocation on the same window would re-send
+	 * every email a first invocation completed.
+	 */
+	public function test_cli_backfill_idempotent_across_invocations() {
+		// Simulate post-first-CLI-invocation state: SENT meta set.
+		$sub = $this->make_subscription_stub(
+			[
+				Card_Expiry_Warning::SENT_META_PREFIX . 100 => '100:12/2026',
+			]
+		);
+
+		// Second CLI invocation = same args, bypass=true.
+		$blocked = $this->invoke_is_already_processed( $sub, 100, '100:12/2026', true );
+
+		$this->assertTrue(
+			$blocked,
+			'SENT meta must block even with bypass=true — otherwise CLI re-runs duplicate sends.'
+		);
+
+		// Sanity: SEEDED meta absent on this token (the seed mark was
+		// deleted by the first CLI invocation's promote step in real
+		// production; we omit it here to confirm SENT is what blocks).
+		$this->assertSame( '', $sub->get_meta( Card_Expiry_Warning::SEEDED_META_PREFIX . 100, true ) );
+	}
+
+	/**
+	 * `clear_sent_flag` must clear ALL per-token meta entries on the
+	 * subscription, both SEEDED and SENT prefixes. The legacy single-key
+	 * shape needed only one delete; the new schema iterates `get_meta_data()`
+	 * and deletes every entry matching either prefix.
+	 *
+	 * Production note: a (subscription, token) pair has at most one of
+	 * {SEEDED, SENT} at any time. The "set both for one token" state
+	 * the fixture constructs here is not naturally reachable, but it's
+	 * the exhaustive shape that proves the clear handles every prefix.
+	 */
+	public function test_clear_sent_flag_clears_all_per_token_meta() {
+		// Two tokens × two prefixes = four meta entries on the sub.
+		$sub = $this->make_subscription_stub(
+			[
+				Card_Expiry_Warning::SEEDED_META_PREFIX . 100 => '100:12/2026',
+				Card_Expiry_Warning::SENT_META_PREFIX . 100   => '100:12/2026',
+				Card_Expiry_Warning::SEEDED_META_PREFIX . 200 => '200:01/2027',
+				Card_Expiry_Warning::SENT_META_PREFIX . 200   => '200:01/2027',
+			]
+		);
+
+		Card_Expiry_Warning::clear_sent_flag( $sub );
+
+		$this->assertSame( '', $sub->get_meta( Card_Expiry_Warning::SEEDED_META_PREFIX . 100, true ) );
+		$this->assertSame( '', $sub->get_meta( Card_Expiry_Warning::SENT_META_PREFIX . 100, true ) );
+		$this->assertSame( '', $sub->get_meta( Card_Expiry_Warning::SEEDED_META_PREFIX . 200, true ) );
+		$this->assertSame( '', $sub->get_meta( Card_Expiry_Warning::SENT_META_PREFIX . 200, true ) );
+		$this->assertSame( [], $sub->get_meta_data(), 'No meta entries should remain after clear_sent_flag.' );
+	}
+
+	/**
+	 * Decision-#2 lock-in (promote invariant):
+	 *
+	 * `maybe_send_warning`'s post-send sequence (delete SEEDED, write
+	 * SENT) maintains the "at most one of {SEEDED, SENT} per token"
+	 * invariant. End-to-end verification of this — i.e. that the seed
+	 * mark is actually deleted as the send completes — needs the full
+	 * Emails::send_email → wp_mail path and runs in scenario 8 of the
+	 * integration smoke script (tests/integration/card-expiry-warning-smoke.php),
+	 * which sets up a real WC_Subscription, invokes
+	 * `maybe_send_warning(..., bypass=true)` against a pre-seeded
+	 * pair, and asserts both `delete_meta(SEEDED)` AND `update_meta(SENT)`
+	 * were applied.
+	 *
+	 * This unit test asserts the structural property — that the helper
+	 * treats SENT (post-promote state) as blocking even under bypass.
+	 * Combined with smoke scenario 8 above, the invariant is locked in
+	 * at both layers.
+	 */
+	public function test_seeded_meta_deleted_when_sent_promotes() {
+		// Simulate post-promote state: SENT set, SEEDED absent (the
+		// invariant maintained by maybe_send_warning's promote step).
+		$sub = $this->make_subscription_stub(
+			[
+				Card_Expiry_Warning::SENT_META_PREFIX . 100 => '100:12/2026',
+			]
+		);
+
+		$this->assertTrue(
+			$this->invoke_is_already_processed( $sub, 100, '100:12/2026', false ),
+			'Post-promote state: SENT blocks the normal-scan path.'
+		);
+		$this->assertTrue(
+			$this->invoke_is_already_processed( $sub, 100, '100:12/2026', true ),
+			'Post-promote state: SENT blocks even with bypass=true (idempotency invariant).'
+		);
+		$this->assertSame(
+			'',
+			$sub->get_meta( Card_Expiry_Warning::SEEDED_META_PREFIX . 100, true ),
+			'Post-promote state: SEEDED meta must be absent (invariant: at most one of {SEEDED, SENT}).'
+		);
+	}
 }
