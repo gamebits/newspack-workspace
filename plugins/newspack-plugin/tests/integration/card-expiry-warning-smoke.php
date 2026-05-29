@@ -127,6 +127,18 @@ $cleanup[] = function () use ( $prior_seeded_option ) {
 	}
 };
 
+// Snapshot the pre-smoke cron schedule so cleanup can restore it
+// (Scenario 1 clears + re-schedules the hook; if we let cleanup nuke
+// it unconditionally, the host site loses its production cron until
+// the next pageload runs init).
+$prior_cron_scheduled = wp_next_scheduled( Card_Expiry_Warning::CRON_HOOK );
+$cleanup[]            = function () use ( $prior_cron_scheduled ) {
+	wp_clear_scheduled_hook( Card_Expiry_Warning::CRON_HOOK );
+	if ( $prior_cron_scheduled ) {
+		wp_schedule_event( $prior_cron_scheduled, 'daily', Card_Expiry_Warning::CRON_HOOK );
+	}
+};
+
 // ── Intercept wp_mail via pre_wp_mail ────────────────────────────────
 // Returning non-null from pre_wp_mail short-circuits wp_mail() without
 // actually sending. We capture the args and return true ("sent OK").
@@ -236,6 +248,12 @@ WP_CLI::log( "  Created subscription #$sub_id." );
 WP_CLI::log( '' );
 WP_CLI::log( '1. Cron scheduled' );
 
+// Clear any existing schedule first — `init()` may have already
+// scheduled the hook on plugin load, which would make this assertion
+// pass even if schedule_cron() itself silently regressed (e.g. typo'd
+// recurrence). The cleanup at the bottom of the script restores the
+// pre-smoke schedule via $prior_cron_scheduled.
+wp_clear_scheduled_hook( Card_Expiry_Warning::CRON_HOOK );
 Card_Expiry_Warning::schedule_cron();
 
 if ( wp_next_scheduled( Card_Expiry_Warning::CRON_HOOK ) ) {
@@ -572,16 +590,21 @@ $cleanup[] = function () use ( $sub2_id ) {
 	wp_delete_post( $sub2_id, true );
 };
 
-// Call get_in_window_pairs with limit=1 directly. Use the actual filter
-// value for days to honor the +32 widening.
-$pairs = Card_Expiry_Warning::get_in_window_pairs(
-	Card_Expiry_Warning::get_days_before_expiry(),
-	1
-);
-if ( count( $pairs ) <= 1 ) {
-	smoke_pass( 'limit=1 returned at most 1 pair (count=' . count( $pairs ) . ').' );
+// First verify the un-capped baseline returns BOTH pairs (proves the
+// fixture is set up correctly), then assert limit=1 returns exactly 1
+// (proves the SQL LIMIT actually caps — `<= 1` would pass on a broken
+// discovery returning 0 and silently mask a regression).
+$days     = Card_Expiry_Warning::get_days_before_expiry();
+$baseline = Card_Expiry_Warning::get_in_window_pairs( $days, PHP_INT_MAX );
+if ( count( $baseline ) < 2 ) {
+	smoke_fail( 'LIMIT-test fixture is wrong: uncapped baseline returned ' . count( $baseline ) . ' pairs; expected 2.' );
 } else {
-	smoke_fail( 'limit=1 returned ' . count( $pairs ) . ' pairs; SQL LIMIT not applied at query time.' );
+	$pairs = Card_Expiry_Warning::get_in_window_pairs( $days, 1 );
+	if ( 1 === count( $pairs ) ) {
+		smoke_pass( 'limit=1 returned exactly 1 pair (uncapped baseline = ' . count( $baseline ) . ').' );
+	} else {
+		smoke_fail( 'limit=1 returned ' . count( $pairs ) . ' pairs; SQL LIMIT not applied at query time.' );
+	}
 }
 
 
@@ -667,8 +690,9 @@ remove_all_filters( 'pre_wp_mail' );
 remove_all_filters( 'newspack_card_expiry_warning_days' );
 remove_all_filters( 'newspack_card_expiry_warning_limit_per_pass' );
 
-// Unschedule cron (may have been scheduled before the test too).
-wp_clear_scheduled_hook( Card_Expiry_Warning::CRON_HOOK );
+// Cron schedule restoration is handled by the snapshot closure
+// pushed onto $cleanup at the top of the script — do NOT
+// wp_clear_scheduled_hook here, that would nuke the restore.
 
 if ( $clean_ok ) {
 	smoke_pass( 'All fixtures cleaned up.' );

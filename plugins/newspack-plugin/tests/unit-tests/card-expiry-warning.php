@@ -112,6 +112,11 @@ class Newspack_Test_Card_Expiry_Warning extends WP_UnitTestCase {
 			wp_delete_post( $this->email_post_id, true );
 			$this->email_post_id = null;
 		}
+		// Safe today: only this test file registers these two filter
+		// hooks (production code only reads them). If a future sibling
+		// integration adds a bootstrap-time default callback, switch
+		// these to targeted remove_filter() calls using stored callback
+		// references so the production default survives the tear_down.
 		remove_all_filters( 'newspack_card_expiry_warning_days' );
 		remove_all_filters( 'newspack_card_expiry_warning_limit_per_pass' );
 		reset_phpmailer_instance();
