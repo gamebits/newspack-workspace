@@ -6,6 +6,35 @@
  * on an active WooCommerce Subscription. Runs a daily cron scan to find
  * expiring CC tokens and notifies the subscription owner.
  *
+ * Publisher-respect — first-deploy seed:
+ *
+ *   On the very first scheduled scan after install (detected via the
+ *   absence of `newspack_card_expiry_warning_seeded` option), this class
+ *   runs a SEED pass instead of a normal scan: it iterates the same
+ *   in-window (subscription, token) pairs the normal scan would have
+ *   sent to, marks each as already-warned via SENT_META, and writes
+ *   the seeded flag — all WITHOUT sending. On subsequent scheduled
+ *   runs, the normal scan proceeds.
+ *
+ *   This protects publishers from a Day 0 mass-email burst. Sites
+ *   that DO want to send the deferred warnings (publisher-initiated
+ *   explicit action) can run:
+ *
+ *     wp newspack card-expiry-warning-backfill
+ *
+ *   The CLI command passes a $bypass_idempotency flag to
+ *   maybe_send_warning() so the seeded SENT_META doesn't block the
+ *   send. See Newspack\CLI\WooCommerce_Subscriptions for the command.
+ *
+ * Publisher-respect — per-pass SQL LIMIT:
+ *
+ *   The discovery query carries a SQL-level LIMIT (filterable via
+ *   `newspack_card_expiry_warning_limit_per_pass`, default 100) so a
+ *   migration day or unusual burst can't load unbounded rows into
+ *   memory. A site exceeding the cap on a given day will see the
+ *   remaining warnings roll into subsequent cron runs — sustained-
+ *   load is fine; this only affects bursts and migrations.
+ *
  * @package Newspack
  */
 
@@ -32,6 +61,22 @@ class Card_Expiry_Warning {
 	 * Subscription meta key for idempotency tracking.
 	 */
 	const SENT_META = '_newspack_card_expiry_warning_sent';
+
+	/**
+	 * Option flagging that the first-deploy seed pass has run.
+	 *
+	 * Stored with autoload=false so it doesn't sit in alloptions on
+	 * every pageload.
+	 */
+	const SEEDED_OPTION = 'newspack_card_expiry_warning_seeded';
+
+	/**
+	 * Default per-pass cap on the discovery query.
+	 *
+	 * Filterable via `newspack_card_expiry_warning_limit_per_pass`.
+	 * Applied at the SQL level — see get_expiring_cc_tokens().
+	 */
+	const LIMIT_PER_PASS_DEFAULT = 100;
 
 	/**
 	 * Initialize hooks and filters.
@@ -67,6 +112,26 @@ class Card_Expiry_Warning {
 		 * @param int $days Default 14.
 		 */
 		return max( 1, (int) apply_filters( 'newspack_card_expiry_warning_days', 14 ) );
+	}
+
+	/**
+	 * Get the per-pass discovery-query cap.
+	 *
+	 * Applied at the SQL level (see get_expiring_cc_tokens) so we
+	 * don't pull unbounded rows into PHP memory on a burst day. Sites
+	 * exceeding the cap on a given day will see remaining warnings
+	 * roll into subsequent cron runs.
+	 *
+	 * @return int Max tokens to consider per pass.
+	 */
+	public static function get_limit_per_pass(): int {
+		/**
+		 * Filters the per-pass cap on the discovery query for the
+		 * card-expiry warning scan.
+		 *
+		 * @param int $limit Default 100.
+		 */
+		return max( 1, (int) apply_filters( 'newspack_card_expiry_warning_limit_per_pass', self::LIMIT_PER_PASS_DEFAULT ) );
 	}
 
 	/**
@@ -148,47 +213,118 @@ class Card_Expiry_Warning {
 	/**
 	 * Scan for expiring credit cards and send warning emails.
 	 *
-	 * Token-first approach: query CC tokens expiring within the warning window,
-	 * then find active subscriptions using each token via WCS_Payment_Tokens.
+	 * On the first scheduled run after install (SEEDED_OPTION absent),
+	 * runs a seed pass instead — see the seed_in_window_pairs() docblock
+	 * and the class-level docblock for the publisher-respect rationale.
 	 */
 	public static function scan_expiring_cards() {
 		if ( ! Emails::can_send_email( self::EMAIL_TYPE ) ) {
 			return;
 		}
-		$days = self::get_days_before_expiry();
 
-		// 1. Find CC tokens expiring within the warning window.
-		$expiring_tokens = self::get_expiring_cc_tokens( $days );
-		if ( empty( $expiring_tokens ) ) {
+		if ( ! get_option( self::SEEDED_OPTION ) ) {
+			self::seed_in_window_pairs();
 			return;
 		}
 
-		// 2. For each expiring token, find active subscriptions using it.
+		$pairs = self::get_in_window_pairs(
+			self::get_days_before_expiry(),
+			self::get_limit_per_pass()
+		);
+		foreach ( $pairs as $pair ) {
+			self::maybe_send_warning( $pair['subscription'], $pair['token'] );
+		}
+	}
+
+	/**
+	 * First-deploy seed pass.
+	 *
+	 * Iterates every currently-in-window (subscription, token) pair the
+	 * normal scan would have sent to, marks each as already-warned via
+	 * SENT_META, and writes the SEEDED_OPTION flag — WITHOUT sending
+	 * anything. Logs the result via Newspack\Logger.
+	 *
+	 * Sites that DO want to send the deferred warnings should run the
+	 * WP-CLI backfill (see class docblock).
+	 */
+	private static function seed_in_window_pairs() {
+		$pairs = self::get_in_window_pairs(
+			self::get_days_before_expiry(),
+			self::get_limit_per_pass()
+		);
+		$count = 0;
+		foreach ( $pairs as $pair ) {
+			$token      = $pair['token'];
+			$expiry_key = $token->get_id() . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
+			$pair['subscription']->update_meta_data( self::SENT_META, $expiry_key );
+			$pair['subscription']->save();
+			++$count;
+		}
+		// autoload=false so this option doesn't sit in alloptions on every pageload.
+		update_option( self::SEEDED_OPTION, '1', false );
+		Logger::log(
+			sprintf(
+				'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
+				$count
+			),
+			'NEWSPACK-CARD-EXPIRY',
+			'info'
+		);
+	}
+
+	/**
+	 * Discover (subscription, token) pairs currently in the warning window.
+	 *
+	 * Returns at most `$limit` pairs (cap applied at the SQL level via
+	 * get_expiring_cc_tokens). A site exceeding `$limit` will see
+	 * remaining warnings roll into subsequent cron runs — sustained-load
+	 * is fine; this only affects bursts and migrations.
+	 *
+	 * Public because the WP-CLI backfill needs to iterate the same set
+	 * without duplicating the discovery logic.
+	 *
+	 * @param int $days  Window in days.
+	 * @param int $limit Max tokens to consider.
+	 * @return array<int, array{subscription: \WC_Subscription, token: \WC_Payment_Token_CC}>
+	 */
+	public static function get_in_window_pairs( int $days, int $limit ): array {
 		if ( ! class_exists( 'WCS_Payment_Tokens' ) ) {
-			return;
+			return [];
 		}
-		foreach ( $expiring_tokens as $token ) {
+		$tokens = self::get_expiring_cc_tokens( $days, $limit );
+		if ( empty( $tokens ) ) {
+			return [];
+		}
+		$pairs = [];
+		foreach ( $tokens as $token ) {
 			$subscription_ids = \WCS_Payment_Tokens::get_subscriptions_from_token( $token );
 			foreach ( $subscription_ids as $subscription_id ) {
 				$subscription = WooCommerce_Subscriptions::sanitize_subscription( $subscription_id );
 				if ( ! $subscription || 'active' !== $subscription->get_status() ) {
 					continue;
 				}
-				self::maybe_send_warning( $subscription, $token );
+				$pairs[] = [
+					'subscription' => $subscription,
+					'token'        => $token,
+				];
 			}
 		}
+		return $pairs;
 	}
 
 	/**
-	 * Find CC tokens expiring within the given number of days.
+	 * Find CC tokens expiring within the given number of days, capped at $limit.
 	 *
 	 * Direct DB query on woocommerce_payment_tokenmeta joined to
-	 * woocommerce_payment_tokens to filter at the DB level.
+	 * woocommerce_payment_tokens to filter at the DB level. The
+	 * `LIMIT %d` is applied at the SQL level so we don't pull
+	 * unbounded rows into PHP memory on a migration or burst day.
 	 *
-	 * @param int $days Number of days in the warning window.
-	 * @return \WC_Payment_Token_CC[] Array of expiring CC token objects.
+	 * @param int $days  Number of days in the warning window.
+	 * @param int $limit Max number of token rows to return.
+	 * @return \WC_Payment_Token_CC[] Array of expiring CC token objects (length <= $limit).
 	 */
-	private static function get_expiring_cc_tokens( int $days ): array {
+	private static function get_expiring_cc_tokens( int $days, int $limit ): array {
 		global $wpdb;
 
 		$today  = gmdate( 'Y-m-d' );
@@ -211,9 +347,11 @@ class Card_Expiry_Warning {
 							CONCAT(ey.meta_value, '-', em.meta_value, '-01'),
 							'%%Y-%%m-%%d'
 						)
-					) BETWEEN %s AND %s",
+					) BETWEEN %s AND %s
+				LIMIT %d",
 				$today,
-				$cutoff
+				$cutoff,
+				$limit
 			)
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -233,27 +371,39 @@ class Card_Expiry_Warning {
 	}
 
 	/**
-	 * Send the expiry warning for a subscription if not already sent.
+	 * Send the expiry warning for a subscription.
 	 *
-	 * Uses per-subscription meta for idempotency: the meta value encodes
-	 * the token ID and expiry date, so it auto-invalidates when the
-	 * payment method changes or for a new expiry cycle.
+	 * Steady-state behavior uses per-subscription meta for idempotency:
+	 * the meta value encodes `token_id:expiry_month/year`, so it
+	 * auto-invalidates when the payment method changes or for a new
+	 * expiry cycle.
 	 *
-	 * @param \WC_Subscription     $subscription The subscription.
-	 * @param \WC_Payment_Token_CC $token        The expiring CC token.
+	 * The WP-CLI backfill command passes `$bypass_idempotency=true` so
+	 * that the seeded SENT_META (from the first-deploy seed pass) doesn't
+	 * block its explicit publisher-initiated sends.
+	 *
+	 * Public because the WP-CLI backfill needs to call it directly with
+	 * the bypass flag.
+	 *
+	 * @param \WC_Subscription     $subscription       The subscription.
+	 * @param \WC_Payment_Token_CC $token              The expiring CC token.
+	 * @param bool                 $bypass_idempotency When true, skip the
+	 *                                                 SENT_META check.
+	 * @return bool Whether the email was sent.
 	 */
-	private static function maybe_send_warning( $subscription, $token ) {
+	public static function maybe_send_warning( $subscription, $token, bool $bypass_idempotency = false ): bool {
 		$expiry_key = $token->get_id() . ':'
 			. $token->get_expiry_month() . '/' . $token->get_expiry_year();
 
-		// Idempotency: skip if we already sent for this token+expiry combo.
-		if ( $subscription->get_meta( self::SENT_META, true ) === $expiry_key ) {
-			return;
+		// Idempotency: skip if we already sent for this token+expiry combo,
+		// unless the caller is an explicit publisher-initiated backfill.
+		if ( ! $bypass_idempotency && $subscription->get_meta( self::SENT_META, true ) === $expiry_key ) {
+			return false;
 		}
 
 		$customer = $subscription->get_user();
 		if ( ! $customer ) {
-			return;
+			return false;
 		}
 
 		$update_url   = \wc_get_account_endpoint_url( 'payment-methods' );
@@ -300,6 +450,7 @@ class Card_Expiry_Warning {
 			$subscription->update_meta_data( self::SENT_META, $expiry_key );
 			$subscription->save();
 		}
+		return (bool) $sent;
 	}
 
 	/**
