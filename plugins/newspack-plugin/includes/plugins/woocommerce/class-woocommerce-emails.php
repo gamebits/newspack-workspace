@@ -222,20 +222,12 @@ class WooCommerce_Emails {
 	public static function get_wc_email_by_id( string $id ) {
 		if ( null === self::$by_id_cache ) {
 			self::$by_id_cache = [];
+			// Existence guards on WC() + WC_Emails are sufficient — if the
+			// mailer itself throws after those are loaded, that's a real
+			// WC-side bug worth surfacing rather than silently swallowing.
 			if ( function_exists( 'WC' ) && class_exists( 'WC_Emails' ) ) {
-				try {
-					foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
-						self::$by_id_cache[ $wc_email->id ] = $wc_email;
-					}
-				} catch ( \Throwable $e ) {
-					// Mailer init failed. Log so this surfaces in newspack-log
-					// instead of being a silent empty-list — callers fall
-					// through their null-handling paths regardless.
-					Logger::log(
-						'WC mailer init failed in get_wc_email_by_id: ' . $e->getMessage(),
-						'NEWSPACK-WC-EMAILS',
-						'error'
-					);
+				foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
+					self::$by_id_cache[ $wc_email->id ] = $wc_email;
 				}
 			}
 		}

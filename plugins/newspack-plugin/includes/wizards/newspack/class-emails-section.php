@@ -327,6 +327,17 @@ class Emails_Section extends Wizard_Section {
 	const FIRST_RUN_OPTION = 'newspack_unified_emails_wc_first_run';
 
 	/**
+	 * WC Subscriptions site-wide master switch option key. When this is
+	 * unset, the renewal-reminder email never fires regardless of its
+	 * own enabled flag — first-run mirrors the email's auto-enable into
+	 * this switch ONLY when we're also enabling the email itself (see
+	 * `maybe_first_run_enable_wc_emails`).
+	 *
+	 * @var string
+	 */
+	const WCS_MASTER_SWITCH_OPTION = 'woocommerce_subscriptions_customer_notifications_enabled';
+
+	/**
 	 * On first encounter of a recommended WC email, enable it — but only
 	 * if the publisher hasn't already recorded an explicit decision for
 	 * that email. Idempotent per config key — once a key is in the
@@ -418,9 +429,9 @@ class Emails_Section extends Wizard_Section {
 				// `'no'` returns `'no'` and is preserved.
 				if (
 					'customer_notification_auto_renewal' === $type
-					&& false === get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false )
+					&& false === get_option( self::WCS_MASTER_SWITCH_OPTION, false )
 				) {
-					update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'yes' );
+					update_option( self::WCS_MASTER_SWITCH_OPTION, 'yes' );
 				}
 			}
 

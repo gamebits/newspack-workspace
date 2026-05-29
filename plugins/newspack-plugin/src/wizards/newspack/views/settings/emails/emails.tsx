@@ -305,10 +305,17 @@ const Emails = () => {
 			// through the post editor, so reset has no meaning for them.
 			isEligible: ( item: EmailItem ) => item.source === 'newspack',
 			callback: ( items: EmailItem[] ) => {
+				// Runtime type narrowing — Newspack-source rows always carry an
+				// integer post_id by contract, but a future source/provider
+				// pair with `source: 'newspack'` + string post_id would slip
+				// past isEligible. Matches the activate/deactivate callback
+				// pattern that guards via typeof.
+				const postId = items[ 0 ].post_id;
+				if ( typeof postId !== 'number' ) {
+					return;
+				}
 				if ( utils.confirmAction( __( 'Are you sure you want to reset the contents of this email?', 'newspack-plugin' ) ) ) {
-					// Reset only fires for Newspack-source rows (per isEligible),
-					// which always carry an integer post_id.
-					resetEmail( items[ 0 ].post_id as number );
+					resetEmail( postId );
 				}
 			},
 		},

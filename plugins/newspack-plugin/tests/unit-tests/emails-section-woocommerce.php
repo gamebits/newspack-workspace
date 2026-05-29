@@ -561,7 +561,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	 */
 	public function test_first_run_enables_wcs_master_switch_when_unset() {
 		// Ensure the master switch option doesn't exist.
-		delete_option( 'woocommerce_subscriptions_customer_notifications_enabled' );
+		delete_option( Emails_Section::WCS_MASTER_SWITCH_OPTION );
 
 		$wc_email = $this->register_stub_wc_config(
 			new Newspack_Test_Stub_WC_Email( 'customer_notification_auto_renewal', 'no' )
@@ -572,7 +572,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 
 		$this->assertSame(
 			'yes',
-			get_option( 'woocommerce_subscriptions_customer_notifications_enabled' ),
+			get_option( Emails_Section::WCS_MASTER_SWITCH_OPTION ),
 			'WCS master switch should be set to yes when previously unset.'
 		);
 		$this->assertContains(
@@ -592,7 +592,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	 */
 	public function test_first_run_preserves_wcs_master_switch_disabled() {
 		// Publisher has explicitly disabled the WCS master switch.
-		update_option( 'woocommerce_subscriptions_customer_notifications_enabled', 'no' );
+		update_option( Emails_Section::WCS_MASTER_SWITCH_OPTION, 'no' );
 
 		$wc_email = $this->register_stub_wc_config(
 			new Newspack_Test_Stub_WC_Email( 'customer_notification_auto_renewal', 'no' )
@@ -603,7 +603,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 
 		$this->assertSame(
 			'no',
-			get_option( 'woocommerce_subscriptions_customer_notifications_enabled' ),
+			get_option( Emails_Section::WCS_MASTER_SWITCH_OPTION ),
 			'Publisher\'s explicit master-switch=no MUST NOT be overwritten on first-run.'
 		);
 		$this->assertContains(
@@ -622,7 +622,7 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 	 * non-auto-renewal email and verifies the option stays absent.
 	 */
 	public function test_first_run_does_not_flip_master_switch_for_other_emails() {
-		delete_option( 'woocommerce_subscriptions_customer_notifications_enabled' );
+		delete_option( Emails_Section::WCS_MASTER_SWITCH_OPTION );
 
 		$wc_email = $this->register_stub_wc_config(
 			new Newspack_Test_Stub_WC_Email( 'customer_payment_retry', 'no' )
@@ -632,14 +632,14 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		Emails_Section::maybe_first_run_enable_wc_emails();
 
 		$this->assertFalse(
-			get_option( 'woocommerce_subscriptions_customer_notifications_enabled', false ),
+			get_option( Emails_Section::WCS_MASTER_SWITCH_OPTION, false ),
 			'Master switch should remain absent for non-auto-renewal first-runs.'
 		);
 	}
 
 	/*
 	 * ------------------------------------------------------------------
-	 * Bucket F.5 — Config schema shape (dkoo's refactor — drop instance)
+	 * Bucket F.5 — Config schema shape (no live `WC_Email` instance)
 	 * ------------------------------------------------------------------
 	 * The unified `newspack_email_configs` schema MUST stay JSON-
 	 * serializable. The live `WC_Email` instance is resolved on-demand
@@ -689,6 +689,57 @@ class Newspack_Test_Emails_Section_WooCommerce extends WP_UnitTestCase {
 		$configs = \Newspack\WooCommerce_Emails::get_email_configs( [] );
 		$this->assertArrayHasKey( 'customer_new_account', $configs );
 		$this->assertSame( 'WC_Email_Customer_New_Account', $configs['customer_new_account']['wc_email_class'] );
+	}
+
+	/**
+	 * Live-WC integration: every WC-source config surfaced by the
+	 * registration loop has a `wc_email_class` that actually matches
+	 * `get_class()` of the corresponding instance in
+	 * `WC()->mailer()->get_emails()`. Skipped when real WC isn't loaded.
+	 *
+	 * The stub-only coverage above copies the allowlist values into the
+	 * test fixture, so a wrong id↔class mapping in production passes
+	 * the stub assertions but fails here on a live-WC environment.
+	 * Catches typos, renames, or new entries that drift from the actual
+	 * WC mailer registrations.
+	 */
+	public function test_surfaced_wc_emails_match_live_mailer_classes() {
+		if ( ! function_exists( 'WC' ) || ! class_exists( 'WC_Emails' ) ) {
+			$this->markTestSkipped( 'Real WC not loaded; cannot compare against WC()->mailer()->get_emails().' );
+		}
+
+		// Reset the by-id cache so this test reads the live mailer state
+		// rather than any cache primed by sibling tests in this suite.
+		\Newspack\WooCommerce_Emails::reset_wc_email_cache_for_test();
+
+		$mailer_emails = [];
+		foreach ( \WC()->mailer()->get_emails() as $wc_email ) {
+			$mailer_emails[ $wc_email->id ] = $wc_email;
+		}
+
+		// Iterate the configs the registration loop actually emits — this
+		// covers the same set as the SURFACED_WC_EMAILS allowlist while
+		// honoring its plugin_dependency gates (so we don't false-fail on
+		// a WCS / WCSG entry when those plugins aren't installed).
+		$configs    = \Newspack\WooCommerce_Emails::get_email_configs( [] );
+		$wc_configs = array_filter(
+			$configs,
+			fn( $config ) => 'woocommerce' === ( $config['source'] ?? '' )
+		);
+		$this->assertNotEmpty( $wc_configs, 'Expected at least one WC-source config to be registered with WC active.' );
+
+		foreach ( $wc_configs as $id => $config ) {
+			$this->assertArrayHasKey(
+				$id,
+				$mailer_emails,
+				"Surfaced WC id '$id' is not registered in WC()->mailer()->get_emails()."
+			);
+			$this->assertSame(
+				get_class( $mailer_emails[ $id ] ),
+				$config['wc_email_class'],
+				"wc_email_class for '$id' must match the live mailer's class."
+			);
+		}
 	}
 
 	/**
