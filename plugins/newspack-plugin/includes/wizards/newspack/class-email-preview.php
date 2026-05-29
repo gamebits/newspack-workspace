@@ -13,6 +13,7 @@ namespace Newspack\Wizards\Newspack;
 
 use Newspack\Emails;
 use Newspack\Logger;
+use Newspack\WooCommerce_Emails;
 use Newspack_Newsletters;
 
 defined( 'ABSPATH' ) || exit;
@@ -75,11 +76,27 @@ class Email_Preview {
 		}
 
 		$template_path = $configs[ $type ]['template'];
-		if ( ! is_readable( $template_path ) ) {
+
+		// `$template_path` comes through the `newspack_email_configs`
+		// filter. A malicious or buggy third-party hook could supply any
+		// readable file path on the server (LFI) or — worse — point at an
+		// attacker-uploaded `.php` file (RCE via top-level side effects on
+		// include). `is_readable` doesn't gate against either. Constrain
+		// the path to within the plugin tree and require a `.php`
+		// extension before including. realpath() also resolves any
+		// `../` traversal away from the plugin root.
+		$resolved = realpath( $template_path );
+		$plugin_root = realpath( dirname( NEWSPACK_PLUGIN_FILE ) );
+		if (
+			false === $resolved
+			|| false === $plugin_root
+			|| 0 !== strpos( $resolved, $plugin_root . DIRECTORY_SEPARATOR )
+			|| '.php' !== substr( $resolved, -4 )
+		) {
 			return '';
 		}
 
-		$template_data = include $template_path;
+		$template_data = include $resolved;
 		if ( ! is_array( $template_data ) || empty( $template_data['email_html'] ) ) {
 			return '';
 		}
@@ -153,9 +170,18 @@ class Email_Preview {
 		$site_url        = get_bloginfo( 'wpurl' );
 		$reply_to_email  = Emails::get_reply_to_email();
 		$site_address    = self::get_site_address();
-		$site_contact    = $site_address
-			? sprintf( '<strong>%s</strong> — %s', $site_title, $site_address )
-			: $site_title;
+		// *SITE_CONTACT* lives in the 'raw' bucket (pre-escaped HTML, NOT
+		// re-escaped at strtr-time), so the values interpolated here MUST
+		// be escaped at construction time. get_bloginfo('name') and the
+		// WC store address are admin-controlled strings — if an admin
+		// (or a role-elevation supply-chain compromise) sets the site
+		// title to a `<script>` or malformed tag, the unescaped version
+		// would inject into the iframe's srcDoc. Iframe sandbox blocks
+		// script execution today, but breaks rendering and would be
+		// immediately exploitable if `allow-scripts` were ever added.
+		$site_contact = $site_address
+			? sprintf( '<strong>%s</strong> — %s', esc_html( $site_title ), esc_html( $site_address ) )
+			: esc_html( $site_title );
 
 		return [
 			// Tokens rendered as visible text inside HTML — escaped with esc_html().
@@ -353,8 +379,15 @@ class Email_Preview {
 			return null;
 		}
 
+		// Track whether set_up_filters() ran to completion. If it threw
+		// mid-way, clean_up_filters() may not be safe to call (it could
+		// reference state that set_up_filters never initialized). The
+		// flag gates the cleanup so we don't risk a second throw bubbling
+		// past this method's catch.
+		$filters_set_up = false;
 		try {
 			$preview->set_up_filters();
+			$filters_set_up = true;
 			$renderer = wc_get_container()->get( $renderer_class );
 			$html     = $renderer->maybe_render_block_email( $preview->get_email() );
 			$preview->clean_up_filters();
@@ -370,7 +403,21 @@ class Email_Preview {
 
 			return $html;
 		} catch ( \Throwable $e ) {
-			$preview->clean_up_filters();
+			if ( $filters_set_up ) {
+				// Wrap the cleanup in its own try/catch — a second throw
+				// from clean_up_filters() would otherwise escape past this
+				// method's catch and bubble up to api_get_preview as a
+				// 500 fatal with no graceful fallback to legacy preview.
+				try {
+					$preview->clean_up_filters();
+				} catch ( \Throwable $cleanup_e ) {
+					Logger::log(
+						'clean_up_filters() also threw during BlockEmailRenderer recovery: ' . $cleanup_e->getMessage(),
+						'NEWSPACK-EMAILS',
+						'warning'
+					);
+				}
+			}
 			Logger::log(
 				'BlockEmailRenderer threw ' . get_class( $e ) . " for woo_email post $post_id ($email_class_name): " . $e->getMessage() . '; using legacy preview.',
 				'NEWSPACK-EMAILS',
@@ -473,7 +520,21 @@ class Email_Preview {
 			// (WC Subscriptions, etc.).
 			$template_post_id = Emails_Section::get_wc_email_template_post_id( $wc_email_id );
 			if ( $template_post_id ) {
-				$html = self::get_wc_preview_html( $template_post_id );
+				// `get_wc_email_template_post_id` is a raw WC option read
+				// — it doesn't verify the referenced post still exists or
+				// is in an editable status. If the publisher trashed the
+				// template post but the WC posts-manager option still
+				// references the trashed ID, we'd render the trashed
+				// content. Mirror the numeric branch's allowlist guard.
+				$template_post = get_post( $template_post_id );
+				if (
+					$template_post
+					&& in_array( $template_post->post_status, [ 'publish', 'draft', 'pending' ], true )
+				) {
+					$html = self::get_wc_preview_html( $template_post_id );
+				} else {
+					$html = self::get_wc_classic_preview_html( $wc_email_id );
+				}
 			} else {
 				$html = self::get_wc_classic_preview_html( $wc_email_id );
 			}
@@ -578,23 +639,21 @@ class Email_Preview {
 			return false;
 		}
 
-		// Wrap the WC interactions (mailer lookup, preview instantiation,
-		// render) in a single try so a throw at any step — including a
-		// shim `\WC()` whose `mailer()` doesn't behave like the real one
-		// — degrades to the logged-false return instead of bubbling.
-		try {
-			// Resolve email ID → class name via the mailer's registered emails.
-			$wc_email_class = null;
-			foreach ( \WC()->mailer()->get_emails() as $class_name => $instance ) {
-				if ( $instance->id === $wc_email_id ) {
-					$wc_email_class = $class_name;
-					break;
-				}
-			}
-			if ( ! $wc_email_class ) {
-				return false;
-			}
+		// Resolve email ID → class name via the slice 2a memoized helper
+		// instead of re-walking the mailer here. The helper already
+		// memoizes the slug→instance map per request, so this honors that
+		// cache instead of paying a fresh mailer init on every preview.
+		$wc_email = WooCommerce_Emails::get_wc_email_by_id( $wc_email_id );
+		if ( ! $wc_email ) {
+			return false;
+		}
+		$wc_email_class = get_class( $wc_email );
 
+		// Wrap the preview instantiation + render in a try so a third-party
+		// hook (e.g. `woocommerce_email_setup_locale`) throwing inside
+		// WC's EmailPreview chain degrades to the logged-false return
+		// instead of bubbling up to api_get_preview as a 500.
+		try {
 			$preview = $preview_class::instance();
 			$preview->set_email_type( $wc_email_class );
 			return $preview->render();

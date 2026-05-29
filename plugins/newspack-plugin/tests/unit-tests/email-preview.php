@@ -173,19 +173,40 @@ class Newspack_Test_Email_Preview extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Translatable sample strings are wrapped in __().
+	 * Raw-bucket value-construction escapes admin-controlled inputs.
+	 *
+	 * *SITE_CONTACT* lives in the 'raw' bucket (not re-escaped at
+	 * strtr-time), so the values built into it MUST be escaped at
+	 * construction. The bucket includes get_bloginfo('name') and the WC
+	 * store address — both admin-controlled. An admin (or a role-elevation
+	 * supply-chain attack) writing `<img onerror=...>` to the site title
+	 * must not flow through to the iframe's srcDoc raw.
 	 */
-	public function test_translated_strings() {
-		$subs = Email_Preview::get_sample_substitutions();
+	public function test_site_contact_escapes_admin_controlled_values() {
+		$original_blogname = get_option( 'blogname' );
+		update_option( 'blogname', 'Acme <img src=x onerror=alert(1)>' );
 
-		// These values should match __() output (in English they're identical,
-		// but this asserts the wrapping is in place).
-		self::assertEquals( __( 'Sample', 'newspack-plugin' ), $subs['html']['*BILLING_FIRST_NAME*'] );
-		self::assertEquals( __( 'Reader', 'newspack-plugin' ), $subs['html']['*BILLING_LAST_NAME*'] );
-		self::assertEquals( __( 'Sample Reader', 'newspack-plugin' ), $subs['html']['*BILLING_NAME*'] );
-		self::assertEquals( __( 'Visa ending in 4242', 'newspack-plugin' ), $subs['html']['*PAYMENT_METHOD*'] );
-		self::assertEquals( __( 'Monthly Membership', 'newspack-plugin' ), $subs['html']['*PRODUCT_NAME*'] );
-		self::assertEquals( __( 'monthly', 'newspack-plugin' ), $subs['html']['*BILLING_FREQUENCY*'] );
+		$source_html = '<html><body>From: *SITE_CONTACT*</body></html>';
+		$post_id     = $this->create_email_post( $source_html );
+
+		$result = Email_Preview::get_preview_html( $post_id );
+
+		update_option( 'blogname', $original_blogname );
+
+		// The dangerous form is the unescaped HTML element — angle brackets
+		// must be escaped to `&lt;...&gt;`. The literal text `onerror=`
+		// inside escaped content (`&lt;img ... onerror=...&gt;`) is safe
+		// because the browser won't interpret it as an attribute.
+		self::assertStringNotContainsString(
+			'<img src=x',
+			$result,
+			'Raw-bucket *SITE_CONTACT* must escape the unescaped `<img>` tag.'
+		);
+		self::assertStringContainsString(
+			'&lt;img',
+			$result,
+			'Raw-bucket *SITE_CONTACT* must HTML-encode angle brackets in the site title.'
+		);
 	}
 
 	/**

@@ -173,6 +173,14 @@ const EmailPreview: React.FC< EmailPreviewProps > = ( { postId } ) => {
 				return;
 			}
 			finalized = true;
+			// Guard against postId changing mid-load: by the time the
+			// Promise.all resolves (or the 8s safety fires), the iframe
+			// may have been re-mounted with a different srcDoc — check
+			// that the captured `doc` still belongs to the live iframe
+			// before applying its measurements to component state.
+			if ( iframeRef.current?.contentDocument !== doc ) {
+				return;
+			}
 			if ( safetyTimerRef.current ) {
 				clearTimeout( safetyTimerRef.current );
 				safetyTimerRef.current = null;
@@ -209,7 +217,18 @@ const EmailPreview: React.FC< EmailPreviewProps > = ( { postId } ) => {
 					/* sandbox: allow-same-origin is required so handleIframeLoad can
 					 * read contentDocument (body.scrollHeight, stylesheet load state).
 					 * Without allow-scripts, JS cannot execute. Without allow-forms,
-					 * form submissions are blocked. */
+					 * form submissions are blocked.
+					 *
+					 * SECURITY: DO NOT add `allow-scripts` here without ALSO removing
+					 * `allow-same-origin`. The combination `allow-same-origin allow-scripts`
+					 * is equivalent to no sandbox at all — JS inside the iframe can
+					 * reach `top.document` and exfiltrate the admin nonce. The srcDoc
+					 * content includes admin-supplied HTML (EMAIL_HTML_META) and
+					 * publisher-controlled values like the site title, so the
+					 * sandbox is load-bearing for XSS containment. If interactive
+					 * previews are needed later, use `allow-scripts` only and
+					 * communicate height via postMessage instead of contentDocument
+					 * reads. */
 					sandbox="allow-same-origin"
 					tabIndex={ -1 }
 					title={ __( 'Email preview', 'newspack-plugin' ) }
