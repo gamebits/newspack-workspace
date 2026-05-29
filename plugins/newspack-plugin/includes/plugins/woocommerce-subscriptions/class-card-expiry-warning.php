@@ -262,13 +262,18 @@ class Card_Expiry_Warning {
 		}
 		// autoload=false so this option doesn't sit in alloptions on every pageload.
 		update_option( self::SEEDED_OPTION, '1', false );
+		// Logged at 'warning' (vs 'info') so the entry carries a
+		// `[WARNING]:` prefix in error_log output — the seed is a
+		// significant one-time event and a publisher debugging
+		// "card-expiry warnings didn't fire on day 1" needs this entry
+		// to stand out under grep.
 		Logger::log(
 			sprintf(
 				'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
 				$count
 			),
 			'NEWSPACK-CARD-EXPIRY',
-			'info'
+			'warning'
 		);
 	}
 
@@ -382,8 +387,11 @@ class Card_Expiry_Warning {
 	 * that the seeded SENT_META (from the first-deploy seed pass) doesn't
 	 * block its explicit publisher-initiated sends.
 	 *
-	 * Public because the WP-CLI backfill needs to call it directly with
-	 * the bypass flag.
+	 * @internal Public only so the WP-CLI backfill in
+	 *           `Newspack\CLI\WooCommerce_Subscriptions::card_expiry_warning_backfill()`
+	 *           can pass the bypass flag. Not part of the stable public
+	 *           API — external callers should not depend on this
+	 *           signature.
 	 *
 	 * @param \WC_Subscription     $subscription       The subscription.
 	 * @param \WC_Payment_Token_CC $token              The expiring CC token.
