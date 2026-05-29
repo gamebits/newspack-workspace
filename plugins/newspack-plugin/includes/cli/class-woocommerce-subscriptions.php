@@ -296,34 +296,64 @@ class WooCommerce_Subscriptions {
 			? max( 1, (int) $assoc_args['days'] )
 			: Card_Expiry_Warning::get_days_before_expiry();
 
-		// No-cap default: this is a publisher-initiated explicit action,
-		// not the per-cron-pass guard. PHP_INT_MAX still goes through the
-		// SQL-level LIMIT clause, which is fine — MySQL accepts large
-		// LIMIT values and the discovery cost scales with actual matches,
-		// not with the cap itself.
+		// --limit caps ACTUAL SENDS per invocation, not SQL discovery —
+		// applied in the foreach loop below after the idempotency gate.
+		// Applying it as a SQL LIMIT (the legacy shape) would cause the
+		// same starvation as scan_expiring_cards had: ORDER BY token_id
+		// ASC + LIMIT N means the same first-N tokens surface each run,
+		// and once those N are gated (SENT, unattached, etc.) every
+		// subsequent run no-ops and the unprocessed remainder is never
+		// reached. Caught in Copilot review on #155.
 		$limit = isset( $assoc_args['limit'] )
 			? max( 1, (int) $assoc_args['limit'] )
 			: PHP_INT_MAX;
 
-		$pairs = Card_Expiry_Warning::get_in_window_pairs( $days, $limit );
+		// Discovery uses PHP_INT_MAX (no SQL LIMIT) — already-processed
+		// pairs filter out in the loop via is_already_processed, and
+		// only actual sends count toward $limit.
+		$pairs = Card_Expiry_Warning::get_in_window_pairs( $days, PHP_INT_MAX );
+
+		// Filter to the pairs that would actually send (skip pairs the
+		// idempotency gate would block, even with bypass=true — i.e.,
+		// pairs with SENT meta from a prior real send). This makes the
+		// --dry-run output accurate (no false-positive "Would send to"
+		// reports for pairs that wouldn't fire) and gives the confirm
+		// prompt's count the same meaning as the post-run "Sent N" total.
+		$pairs = array_values(
+			array_filter(
+				$pairs,
+				function ( $pair ) {
+					$token      = $pair['token'];
+					$token_id   = $token->get_id();
+					$expiry_key = $token_id . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
+					return ! Card_Expiry_Warning::is_already_processed( $pair['subscription'], $token_id, $expiry_key, true );
+				}
+			)
+		);
 		$count = count( $pairs );
 
 		if ( 0 === $count ) {
-			WP_CLI::success( 'No (subscription, token) pairs in the warning window.' );
+			WP_CLI::success( 'No (subscription, token) pairs in the warning window that would send. (Already-processed pairs are filtered out.)' );
 			return;
 		}
 
 		// Confirmation gate (dry-run skips because no harmful action).
 		// $assoc_args is passed so `--yes` is auto-handled by WP_CLI.
+		// $count above already reflects only the pairs that WOULD send;
+		// the prompt is honest about scope.
 		if ( ! $is_dry_run ) {
+			$prompt_count = min( $count, $limit );
 			WP_CLI::confirm(
-				sprintf( 'This will send card-expiry warning emails to %d reader(s). Continue?', $count ),
+				sprintf( 'This will send card-expiry warning emails to %d reader(s). Continue?', $prompt_count ),
 				$assoc_args
 			);
 		}
 
 		$sent = 0;
 		foreach ( $pairs as $pair ) {
+			if ( $sent >= $limit ) {
+				break;
+			}
 			$subscription = $pair['subscription'];
 			$token        = $pair['token'];
 			$line         = sprintf(

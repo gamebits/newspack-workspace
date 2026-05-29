@@ -184,8 +184,11 @@ class Card_Expiry_Warning {
 	 */
 	public static function get_limit_per_pass(): int {
 		/**
-		 * Filters the per-pass cap on the discovery query for the
-		 * card-expiry warning scan.
+		 * Filters the per-pass cap on ACTUAL SENDS per cron tick for
+		 * the card-expiry warning scan. Applied in the foreach loop of
+		 * `scan_expiring_cards()` (and in the WP-CLI backfill's loop),
+		 * NOT at SQL discovery — already-processed pairs skip via the
+		 * idempotency gate without consuming the cap.
 		 *
 		 * @param int $limit Default 100.
 		 */
@@ -524,13 +527,18 @@ class Card_Expiry_Warning {
 	 * Replacing this with `metadata_exists()` would silently block the
 	 * new warning. Do NOT simplify to existence-only.
 	 *
+	 * @internal Public so the WP-CLI backfill's --dry-run path can
+	 *           preview accurately (skip pairs that wouldn't actually
+	 *           send). Not part of the stable public API — external
+	 *           callers should not depend on this signature.
+	 *
 	 * @param \WC_Subscription $subscription       The subscription.
 	 * @param int              $token_id           The CC token id.
 	 * @param string           $expiry_key         `token_id:MM/YYYY`.
 	 * @param bool             $bypass_idempotency When true, ignore the SEEDED gate (SENT still blocks).
 	 * @return bool True if already processed (skip), false if proceed.
 	 */
-	private static function is_already_processed( $subscription, int $token_id, string $expiry_key, bool $bypass_idempotency = false ): bool {
+	public static function is_already_processed( $subscription, int $token_id, string $expiry_key, bool $bypass_idempotency = false ): bool {
 		if ( $subscription->get_meta( self::SENT_META_PREFIX . $token_id, true ) === $expiry_key ) {
 			return true;
 		}
