@@ -245,6 +245,12 @@ class Emails_Section extends Wizard_Section {
 			);
 		}
 
+		// Returns the raw Emails::get_emails() array, not the enriched
+		// api_get_email_settings() shape that the sibling api_toggle_wc_email
+		// returns. Preserves the legacy donations-endpoint contract
+		// (callers depending on the raw shape don't break on the move).
+		// Aligning sibling endpoints in this class on a single shape is
+		// tracked separately — see NPPD-1569.
 		return rest_ensure_response(
 			Emails::get_emails( Reader_Activation::is_enabled() ? [] : array_values( Reader_Revenue_Emails::EMAIL_TYPES ), false )
 		);
