@@ -30,14 +30,23 @@
  *   idempotent — see is_already_processed() for the gating logic.
  *   See Newspack\CLI\WooCommerce_Subscriptions for the command.
  *
- * Publisher-respect — per-pass SQL LIMIT:
+ * Publisher-respect — per-pass send cap:
  *
- *   The discovery query carries a SQL-level LIMIT (filterable via
- *   `newspack_card_expiry_warning_limit_per_pass`, default 100) so a
- *   migration day or unusual burst can't load unbounded rows into
- *   memory. A site exceeding the cap on a given day will see the
- *   remaining warnings roll into subsequent cron runs — sustained-
- *   load is fine; this only affects bursts and migrations.
+ *   `scan_expiring_cards` caps ACTUAL SENDS per cron tick (filterable
+ *   via `newspack_card_expiry_warning_limit_per_pass`, default 100) so
+ *   a migration day or unusual burst doesn't dump thousands of emails
+ *   into the publisher's mail provider in one go. The cap applies to
+ *   real sends only — already-processed pairs (SEEDED or SENT) skip
+ *   via the idempotency gate without counting toward it. A site
+ *   exceeding the cap on a given day sees remaining warnings roll
+ *   into subsequent cron runs.
+ *
+ *   Discovery memory is bounded by the window size (date-range ×
+ *   subscription-density), not by a SQL LIMIT — the legacy SQL LIMIT
+ *   caused starvation (deterministic ORDER BY token_id ASC made the
+ *   same first-N tokens surface daily; once marked, the unprocessed
+ *   remainder never got reached). See `scan_expiring_cards` for the
+ *   send-cap implementation.
  *
  * @package Newspack
  */
@@ -107,10 +116,13 @@ class Card_Expiry_Warning {
 	const SEEDED_OPTION = 'newspack_card_expiry_warning_seeded';
 
 	/**
-	 * Default per-pass cap on the discovery query.
+	 * Default per-pass cap on ACTUAL SENDS per cron tick.
 	 *
 	 * Filterable via `newspack_card_expiry_warning_limit_per_pass`.
-	 * Applied at the SQL level — see get_expiring_cc_tokens().
+	 * Applied in the foreach loop of `scan_expiring_cards()`, not at
+	 * the SQL level — see the "Publisher-respect — per-pass send cap"
+	 * section of the class docblock for the starvation-avoidance
+	 * rationale.
 	 */
 	const LIMIT_PER_PASS_DEFAULT = 100;
 
@@ -156,14 +168,19 @@ class Card_Expiry_Warning {
 	}
 
 	/**
-	 * Get the per-pass discovery-query cap.
+	 * Get the per-pass cap on actual sends.
 	 *
-	 * Applied at the SQL level (see get_expiring_cc_tokens) so we
-	 * don't pull unbounded rows into PHP memory on a burst day. Sites
-	 * exceeding the cap on a given day will see remaining warnings
-	 * roll into subsequent cron runs.
+	 * Applied in `scan_expiring_cards()`'s foreach loop — counts only
+	 * actual sends (already-processed pairs skip via the idempotency
+	 * gate and don't consume the cap). Sites exceeding the cap on a
+	 * given day see remaining warnings roll into subsequent cron runs.
 	 *
-	 * @return int Max tokens to consider per pass.
+	 * NOT applied at the SQL level — that shape was reverted in the
+	 * Copilot review on #155 because ORDER BY token_id ASC + LIMIT N
+	 * meant the same first-N token_ids surfaced each day, and once
+	 * those N were marked the unprocessed remainder starved.
+	 *
+	 * @return int Max sends per pass.
 	 */
 	public static function get_limit_per_pass(): int {
 		/**
@@ -260,6 +277,16 @@ class Card_Expiry_Warning {
 	 * On the first scheduled run after install (SEEDED_OPTION absent),
 	 * runs a seed pass instead — see the seed_in_window_pairs() docblock
 	 * and the class-level docblock for the publisher-respect rationale.
+	 *
+	 * The per-pass cap from `get_limit_per_pass()` applies to ACTUAL
+	 * SENDS, not to discovery. Discovery returns all in-window pairs
+	 * (memory bounded by `newspack_card_expiry_warning_days`); the
+	 * foreach below breaks once `$sent` reaches the cap. Applying the
+	 * cap at the SQL-discovery level (the legacy shape) would have
+	 * caused starvation: ORDER BY token_id ASC made the same first N
+	 * token_ids surface each day, so once those N were all marked
+	 * SEEDED or SENT, every subsequent scan would no-op and never reach
+	 * the unprocessed remainder. Caught in Copilot review on #155.
 	 */
 	public static function scan_expiring_cards() {
 		if ( ! Emails::can_send_email( self::EMAIL_TYPE ) ) {
@@ -271,17 +298,28 @@ class Card_Expiry_Warning {
 			return;
 		}
 
+		// Discovery uses PHP_INT_MAX (effectively no SQL LIMIT) so every
+		// in-window pair surfaces — already-processed pairs skip via the
+		// idempotency gate in maybe_send_warning, and only actual sends
+		// count toward the per-pass cap below.
 		$pairs = self::get_in_window_pairs(
 			self::get_days_before_expiry(),
-			self::get_limit_per_pass()
+			PHP_INT_MAX
 		);
+		$cap   = self::get_limit_per_pass();
+		$sent  = 0;
 		foreach ( $pairs as $pair ) {
+			if ( $sent >= $cap ) {
+				break;
+			}
 			// Per-pair try/catch so a single throwing pair (e.g. an SMTP
 			// filter rejecting a malformed address, a third-party WC hook
 			// that throws on save) doesn't abort the rest of the pass and
 			// skip every later pair until tomorrow's cron.
 			try {
-				self::maybe_send_warning( $pair['subscription'], $pair['token'] );
+				if ( self::maybe_send_warning( $pair['subscription'], $pair['token'] ) ) {
+					++$sent;
+				}
 			} catch ( \Throwable $e ) {
 				Logger::log(
 					sprintf(

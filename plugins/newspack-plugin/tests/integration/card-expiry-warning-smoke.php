@@ -32,7 +32,8 @@
  *     flips the option. Subsequent scan takes the normal-scan branch.
  *  8. `$bypass_idempotency=true` sends despite SEEDED meta (the WP-CLI
  *     backfill's escape-hatch contract); SEEDED → SENT promote invariant.
- *  9. SQL `LIMIT` is applied at query time, not after fetch.
+ *  9. Per-pass send cap respects `limit_per_pass` filter (applied to
+ *     actual sends in scan_expiring_cards, not at SQL discovery).
  * 10. CLI dry-run: no emails sent.
  * 11. CLI normal run: sends despite SEEDED meta (uses bypass under the hood).
  * 12. Cleanup.
@@ -573,16 +574,23 @@ if ( $s8_ok ) {
 
 
 // ══════════════════════════════════════════════════════════════════════
-// SCENARIO 9: SQL `LIMIT` is applied at query time
+// SCENARIO 9: Per-pass send cap applied to actual sends
 //
-// Pins the "Publisher-respect — per-pass SQL LIMIT" section of the
+// Pins the "Publisher-respect — per-pass send cap" section of the
 // Card_Expiry_Warning class docblock. Sets limit_per_pass=1 via the
-// filter, calls get_in_window_pairs($days, $limit), asserts AT MOST 1
-// pair is returned. The script's $token1 + $token2 are both in window;
-// without LIMIT this would return 2 (or be capped by upstream).
+// filter, clears per-token meta on both subs so two pairs are
+// unprocessed in-window, runs `scan_expiring_cards`, asserts exactly
+// 1 email was sent (the cap stopped the second send).
+//
+// Note: the legacy shape applied the cap at the SQL discovery level
+// (ORDER BY token_id ASC + LIMIT N), which caused starvation — once
+// the first N tokens were marked SEEDED or SENT, every subsequent
+// scan would no-op and never reach the unprocessed remainder.
+// Reverted in Copilot review on #155. The cap now applies to actual
+// sends in the foreach loop; discovery returns all in-window pairs.
 // ══════════════════════════════════════════════════════════════════════
 WP_CLI::log( '' );
-WP_CLI::log( '9. SQL LIMIT respected at query time' );
+WP_CLI::log( '9. Per-pass send cap respects limit_per_pass filter' );
 
 // We need both token1 and token2 to be discovered. Token1 currently
 // has no associated subscription (sub was repointed at token2 in
@@ -613,20 +621,34 @@ $cleanup[] = function () use ( $sub2_id ) {
 	wp_delete_post( $sub2_id, true );
 };
 
-// First verify the un-capped baseline returns BOTH pairs (proves the
-// fixture is set up correctly), then assert limit=1 returns exactly 1
-// (proves the SQL LIMIT actually caps — `<= 1` would pass on a broken
-// discovery returning 0 and silently mask a regression).
+// First verify the uncapped baseline returns BOTH pairs (proves the
+// fixture is set up correctly: both subs have in-window tokens).
 $days     = Card_Expiry_Warning::get_days_before_expiry();
 $baseline = Card_Expiry_Warning::get_in_window_pairs( $days, PHP_INT_MAX );
 if ( count( $baseline ) < 2 ) {
-	smoke_fail( 'LIMIT-test fixture is wrong: uncapped baseline returned ' . count( $baseline ) . ' pairs; expected 2.' );
+	smoke_fail( 'Send-cap test fixture is wrong: uncapped baseline returned ' . count( $baseline ) . ' pairs; expected >= 2.' );
 } else {
-	$pairs = Card_Expiry_Warning::get_in_window_pairs( $days, 1 );
-	if ( 1 === count( $pairs ) ) {
-		smoke_pass( 'limit=1 returned exactly 1 pair (uncapped baseline = ' . count( $baseline ) . ').' );
+	// Reset state: clear all per-token meta on both subs so both pairs
+	// are unprocessed at scan time.
+	Card_Expiry_Warning::clear_sent_flag( wcs_get_subscription( $sub_id ) );
+	Card_Expiry_Warning::clear_sent_flag( wcs_get_subscription( $sub2_id ) );
+
+	// Cap to 1 via the filter — only one send should happen.
+	add_filter( 'newspack_card_expiry_warning_limit_per_pass', fn() => 1, 99 );
+
+	$mails = [];
+	Card_Expiry_Warning::scan_expiring_cards();
+
+	remove_all_filters( 'newspack_card_expiry_warning_limit_per_pass' );
+	// Re-apply the test's outer days filter that this scope shares
+	// (gets stripped by the remove_all_filters above if the days filter
+	// happens to be on the same hook — defensive re-add isn't needed
+	// here since the days filter uses a different hook name).
+
+	if ( 1 === count( $mails ) ) {
+		smoke_pass( 'limit_per_pass=1 sent exactly 1 email (uncapped baseline = ' . count( $baseline ) . ').' );
 	} else {
-		smoke_fail( 'limit=1 returned ' . count( $pairs ) . ' pairs; SQL LIMIT not applied at query time.' );
+		smoke_fail( 'limit_per_pass=1 sent ' . count( $mails ) . ' email(s); cap not applied to sends.' );
 	}
 }
 
