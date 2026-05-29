@@ -27,14 +27,14 @@
  * per-pass SQL LIMIT" sections of the Card_Expiry_Warning class
  * docblock:
  *
- *  7. First-deploy seed: SEEDED_OPTION absent → seed pass marks
- *     SENT_META on in-window pairs WITHOUT sending, then flips the
- *     option. Subsequent scan takes the normal-scan branch.
- *  8. `$bypass_idempotency=true` sends despite SENT_META (the WP-CLI
- *     backfill's escape-hatch contract).
+ *  7. First-deploy seed: SEEDED_OPTION absent → seed pass marks the
+ *     per-token SEEDED meta on in-window pairs WITHOUT sending, then
+ *     flips the option. Subsequent scan takes the normal-scan branch.
+ *  8. `$bypass_idempotency=true` sends despite SEEDED meta (the WP-CLI
+ *     backfill's escape-hatch contract); SEEDED → SENT promote invariant.
  *  9. SQL `LIMIT` is applied at query time, not after fetch.
  * 10. CLI dry-run: no emails sent.
- * 11. CLI normal run: sends despite SENT_META (uses bypass under the hood).
+ * 11. CLI normal run: sends despite SEEDED meta (uses bypass under the hood).
  * 12. Cleanup.
  *
  * @package Newspack\Tests
@@ -303,12 +303,14 @@ if ( count( $mails ) !== 1 ) {
 		$s2_ok = false;
 	}
 
-	// Check idempotency meta.
+	// Check idempotency meta. Per-token SENT key (NPPD-1568 two-prefix
+	// schema): SENT_META_PREFIX . $token_id, value = $expiry_key.
 	$subscription  = wcs_get_subscription( $sub_id );
-	$meta_val      = $subscription->get_meta( '_newspack_card_expiry_warning_sent', true );
+	$sent_key      = Card_Expiry_Warning::SENT_META_PREFIX . $token1->get_id();
+	$meta_val      = $subscription->get_meta( $sent_key, true );
 	$expected_meta = $token1->get_id() . ':' . $token1->get_expiry_month() . '/' . $token1->get_expiry_year();
 	if ( $meta_val !== $expected_meta ) {
-		smoke_fail( "Idempotency meta mismatch: expected '$expected_meta', got '$meta_val'." );
+		smoke_fail( "Idempotency meta mismatch at '$sent_key': expected '$expected_meta', got '$meta_val'." );
 		$s2_ok = false;
 	}
 }
@@ -329,13 +331,14 @@ Card_Expiry_Warning::scan_expiring_cards();
 
 if ( 0 === count( $mails ) ) {
 	$subscription  = wcs_get_subscription( $sub_id );
-	$meta_val      = $subscription->get_meta( '_newspack_card_expiry_warning_sent', true );
+	$sent_key      = Card_Expiry_Warning::SENT_META_PREFIX . $token1->get_id();
+	$meta_val      = $subscription->get_meta( $sent_key, true );
 	$expected_meta = $token1->get_id() . ':' . $token1->get_expiry_month() . '/' . $token1->get_expiry_year();
 
 	if ( $meta_val === $expected_meta ) {
 		smoke_pass( 'No duplicate email; meta unchanged.' );
 	} else {
-		smoke_fail( "Meta changed unexpectedly to '$meta_val'." );
+		smoke_fail( "Meta at '$sent_key' changed unexpectedly to '$meta_val'." );
 	}
 } else {
 	smoke_fail( 'Duplicate email sent (' . count( $mails ) . ' captured).' );
@@ -355,13 +358,16 @@ WP_CLI::log( '4. clear_sent_flag() handler clears meta' );
 $subscription = wcs_get_subscription( $sub_id );
 Card_Expiry_Warning::clear_sent_flag( $subscription );
 
+// After clear_sent_flag: SENT (and SEEDED) meta for $token1 (the only
+// token sent to up to this point) should be empty.
 $subscription = wcs_get_subscription( $sub_id );
-$meta_val     = $subscription->get_meta( '_newspack_card_expiry_warning_sent', true );
+$sent_key     = Card_Expiry_Warning::SENT_META_PREFIX . $token1->get_id();
+$meta_val     = $subscription->get_meta( $sent_key, true );
 
 if ( empty( $meta_val ) ) {
 	smoke_pass( 'Idempotency meta cleared.' );
 } else {
-	smoke_fail( "Meta should be empty after clear, got '$meta_val'." );
+	smoke_fail( "Meta at '$sent_key' should be empty after clear, got '$meta_val'." );
 }
 
 
@@ -407,10 +413,11 @@ if ( count( $mails ) < 1 ) {
 	}
 
 	$subscription  = wcs_get_subscription( $sub_id );
-	$meta_val      = $subscription->get_meta( '_newspack_card_expiry_warning_sent', true );
+	$sent_key      = Card_Expiry_Warning::SENT_META_PREFIX . $token2->get_id();
+	$meta_val      = $subscription->get_meta( $sent_key, true );
 	$expected_meta = $token2->get_id() . ':' . $token2->get_expiry_month() . '/' . $token2->get_expiry_year();
 	if ( $meta_val !== $expected_meta ) {
-		smoke_fail( "Meta should reflect token2: expected '$expected_meta', got '$meta_val'." );
+		smoke_fail( "Meta at '$sent_key' should reflect token2: expected '$expected_meta', got '$meta_val'." );
 		$s5_ok = false;
 	}
 }
@@ -481,19 +488,19 @@ if ( 0 === count( $mails ) ) {
 //
 // Pins the "Publisher-respect — first-deploy seed" section of the
 // Card_Expiry_Warning class docblock: with SEEDED_OPTION absent, the
-// scan runs a SEED pass that marks SENT_META on every in-window pair
-// WITHOUT sending, then flips the option. The next scan takes the
-// normal-scan path.
+// scan runs a SEED pass that marks the per-token SEEDED meta on every
+// in-window pair WITHOUT sending, then flips the option. The next scan
+// takes the normal-scan path.
 // ══════════════════════════════════════════════════════════════════════
 WP_CLI::log( '' );
-WP_CLI::log( '7. First-deploy seed (no send, SENT_META marked, option flipped)' );
+WP_CLI::log( '7. First-deploy seed (no send, SEEDED meta marked, option flipped)' );
 
 // Reset state: unset the option (simulates a fresh install) and clear
-// any SENT_META from earlier scenarios.
+// any per-token meta from earlier scenarios via clear_sent_flag (which
+// removes both SEEDED and SENT prefixes).
 delete_option( Card_Expiry_Warning::SEEDED_OPTION );
 $subscription = wcs_get_subscription( $sub_id );
-$subscription->delete_meta_data( '_newspack_card_expiry_warning_sent' );
-$subscription->save();
+Card_Expiry_Warning::clear_sent_flag( $subscription );
 
 $mails = [];
 Card_Expiry_Warning::scan_expiring_cards();
@@ -508,28 +515,32 @@ if ( '1' !== get_option( Card_Expiry_Warning::SEEDED_OPTION ) ) {
 	$s7_ok = false;
 }
 $subscription  = wcs_get_subscription( $sub_id );
-$meta_val      = $subscription->get_meta( '_newspack_card_expiry_warning_sent', true );
+$seeded_key    = Card_Expiry_Warning::SEEDED_META_PREFIX . $token2->get_id();
+$meta_val      = $subscription->get_meta( $seeded_key, true );
 $expected_meta = $token2->get_id() . ':' . $token2->get_expiry_month() . '/' . $token2->get_expiry_year();
 if ( $meta_val !== $expected_meta ) {
-	smoke_fail( "Seed pass did not mark SENT_META; expected '$expected_meta', got '$meta_val'." );
+	smoke_fail( "Seed pass did not mark SEEDED meta at '$seeded_key'; expected '$expected_meta', got '$meta_val'." );
 	$s7_ok = false;
 }
 if ( $s7_ok ) {
-	smoke_pass( 'No emails sent, SENT_META marked on in-window pair, SEEDED_OPTION flipped.' );
+	smoke_pass( 'No emails sent, SEEDED meta marked on in-window pair, SEEDED_OPTION flipped.' );
 }
 
 
 // ══════════════════════════════════════════════════════════════════════
-// SCENARIO 8: $bypass_idempotency=true sends despite SENT_META
+// SCENARIO 8: $bypass_idempotency=true sends despite SEEDED meta
 //
 // The WP-CLI backfill's escape-hatch contract: a publisher who wants to
 // send the deferred warnings after a seed-suppressed first deploy can
-// run the CLI command, which bypasses the seeded SENT_META.
+// run the CLI command, which bypasses the per-token SEEDED meta. SENT
+// still blocks even under bypass — that idempotency property is covered
+// by test_cli_backfill_idempotent_across_invocations in the unit suite.
 // ══════════════════════════════════════════════════════════════════════
 WP_CLI::log( '' );
-WP_CLI::log( '8. $bypass_idempotency=true sends despite SENT_META' );
+WP_CLI::log( '8. $bypass_idempotency=true sends despite SEEDED meta' );
 
-// SENT_META is set from scenario 7. Direct call should send anyway.
+// SEEDED meta on $token2 is set from scenario 7. Direct call with
+// bypass=true should send anyway and promote SEEDED → SENT.
 $subscription = wcs_get_subscription( $sub_id );
 $mails        = [];
 $sent         = Card_Expiry_Warning::maybe_send_warning( $subscription, $token2, true );
@@ -544,8 +555,20 @@ if ( 1 !== count( $mails ) ) {
 	smoke_fail( 'Expected exactly 1 email with bypass; got ' . count( $mails ) . '.' );
 	$s8_ok = false;
 }
+// Promote invariant: SEEDED meta deleted, SENT meta set.
+$subscription = wcs_get_subscription( $sub_id );
+$seeded_key   = Card_Expiry_Warning::SEEDED_META_PREFIX . $token2->get_id();
+$sent_key     = Card_Expiry_Warning::SENT_META_PREFIX . $token2->get_id();
+if ( ! empty( $subscription->get_meta( $seeded_key, true ) ) ) {
+	smoke_fail( "SEEDED meta at '$seeded_key' should have been deleted after promote, but is still present." );
+	$s8_ok = false;
+}
+if ( empty( $subscription->get_meta( $sent_key, true ) ) ) {
+	smoke_fail( "SENT meta at '$sent_key' should have been written after promote." );
+	$s8_ok = false;
+}
 if ( $s8_ok ) {
-	smoke_pass( 'Bypass flag sent despite pre-existing SENT_META.' );
+	smoke_pass( 'Bypass flag sent despite SEEDED meta; SEEDED → SENT promote invariant holds.' );
 }
 
 
@@ -611,18 +634,17 @@ if ( count( $baseline ) < 2 ) {
 // ══════════════════════════════════════════════════════════════════════
 // SCENARIO 10: CLI dry-run does NOT send
 //
-// Clear SENT_META so there's an in-window pair to back-fill, then call
-// the CLI method with --dry-run + --yes. Expect 0 captured emails.
+// Clear all per-token meta (SEEDED + SENT) via clear_sent_flag so there
+// are in-window pairs to back-fill, then call the CLI method with
+// --dry-run + --yes. Expect 0 captured emails.
 // ══════════════════════════════════════════════════════════════════════
 WP_CLI::log( '' );
 WP_CLI::log( '10. CLI dry-run does not send' );
 
 $subscription = wcs_get_subscription( $sub_id );
-$subscription->delete_meta_data( '_newspack_card_expiry_warning_sent' );
-$subscription->save();
+Card_Expiry_Warning::clear_sent_flag( $subscription );
 $subscription2 = wcs_get_subscription( $sub2_id );
-$subscription2->delete_meta_data( '_newspack_card_expiry_warning_sent' );
-$subscription2->save();
+Card_Expiry_Warning::clear_sent_flag( $subscription2 );
 
 $cli   = new CLI_WC_Subscriptions();
 $mails = [];
@@ -642,18 +664,26 @@ if ( 0 === count( $mails ) ) {
 
 
 // ══════════════════════════════════════════════════════════════════════
-// SCENARIO 11: CLI normal run sends despite SENT_META
+// SCENARIO 11: CLI normal run sends despite SEEDED meta
 //
-// Set SENT_META on sub1 to simulate the post-seed state. CLI should
-// bypass it and send anyway (calls maybe_send_warning with bypass=true
-// under the hood).
+// Set SEEDED meta on sub1 to simulate the post-seed state (NPPD-1568
+// schema: SEEDED = "would have warned but didn't"). CLI should bypass
+// SEEDED and send anyway (calls maybe_send_warning with bypass=true
+// under the hood). SENT would NOT be bypassed — that scenario is
+// covered by test_cli_backfill_idempotent_across_invocations in the
+// unit suite.
 // ══════════════════════════════════════════════════════════════════════
 WP_CLI::log( '' );
-WP_CLI::log( '11. CLI normal run sends despite SENT_META' );
+WP_CLI::log( '11. CLI normal run sends despite SEEDED meta' );
 
-$subscription  = wcs_get_subscription( $sub_id );
-$expected_meta = $token2->get_id() . ':' . $token2->get_expiry_month() . '/' . $token2->get_expiry_year();
-$subscription->update_meta_data( '_newspack_card_expiry_warning_sent', $expected_meta );
+$subscription = wcs_get_subscription( $sub_id );
+// Reset state from scenario 10's preceding SENT writes (clear all
+// per-token meta), then set ONLY the SEEDED meta to simulate post-seed.
+Card_Expiry_Warning::clear_sent_flag( $subscription );
+$subscription = wcs_get_subscription( $sub_id );
+$seeded_key   = Card_Expiry_Warning::SEEDED_META_PREFIX . $token2->get_id();
+$seeded_value = $token2->get_id() . ':' . $token2->get_expiry_month() . '/' . $token2->get_expiry_year();
+$subscription->update_meta_data( $seeded_key, $seeded_value );
 $subscription->save();
 
 $mails = [];
@@ -663,7 +693,7 @@ $cli->card_expiry_warning_backfill(
 );
 
 if ( count( $mails ) >= 1 ) {
-	smoke_pass( 'CLI normal run sent ' . count( $mails ) . ' email(s) despite SENT_META.' );
+	smoke_pass( 'CLI normal run sent ' . count( $mails ) . ' email(s) despite SEEDED meta.' );
 } else {
 	smoke_fail( 'CLI normal run sent 0 emails; bypass not applied.' );
 }

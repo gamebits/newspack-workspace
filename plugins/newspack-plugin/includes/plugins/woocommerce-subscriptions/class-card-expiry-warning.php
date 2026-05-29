@@ -12,9 +12,10 @@
  *   absence of `newspack_card_expiry_warning_seeded` option), this class
  *   runs a SEED pass instead of a normal scan: it iterates the same
  *   in-window (subscription, token) pairs the normal scan would have
- *   sent to, marks each as already-warned via SENT_META, and writes
- *   the seeded flag — all WITHOUT sending. On subsequent scheduled
- *   runs, the normal scan proceeds.
+ *   sent to, marks each as already-warned via a per-token SEEDED meta
+ *   entry (see SEEDED_META_PREFIX), and writes the seeded option flag
+ *   — all WITHOUT sending. On subsequent scheduled runs, the normal
+ *   scan proceeds.
  *
  *   This protects publishers from a Day 0 mass-email burst. Sites
  *   that DO want to send the deferred warnings (publisher-initiated
@@ -23,8 +24,11 @@
  *     wp newspack card-expiry-warning-backfill
  *
  *   The CLI command passes a $bypass_idempotency flag to
- *   maybe_send_warning() so the seeded SENT_META doesn't block the
- *   send. See Newspack\CLI\WooCommerce_Subscriptions for the command.
+ *   maybe_send_warning() so the per-token SEEDED meta doesn't block
+ *   the send. The SENT meta (SENT_META_PREFIX) still blocks even
+ *   under bypass, so CLI re-runs on the same window are silently
+ *   idempotent — see is_already_processed() for the gating logic.
+ *   See Newspack\CLI\WooCommerce_Subscriptions for the command.
  *
  * Publisher-respect — per-pass SQL LIMIT:
  *
@@ -58,9 +62,41 @@ class Card_Expiry_Warning {
 	const CRON_HOOK = 'newspack_card_expiry_warning_scan';
 
 	/**
-	 * Subscription meta key for idempotency tracking.
+	 * Per-token meta prefix for the seed pass marker.
+	 *
+	 * Written by `seed_in_window_pairs()` to record that a (subscription,
+	 * token) pair was in-window at the first-deploy seed but was NOT sent
+	 * — see the class docblock's "Publisher-respect — first-deploy seed"
+	 * section. The CLI backfill bypasses the SEEDED gate (operator opt-in
+	 * to release deferred warnings) but NOT the SENT gate (see
+	 * SENT_META_PREFIX).
+	 *
+	 * Per-token suffix (not a single per-subscription key) so a
+	 * subscription with multiple in-window CC tokens has independent
+	 * suppression state per token. The earlier single-key shape collapsed
+	 * all tokens onto one meta value and lost suppression for all but the
+	 * last-iterated token — see NPPD-1568.
+	 *
+	 * Full meta key = `self::SEEDED_META_PREFIX . $token->get_id()`.
 	 */
-	const SENT_META = '_newspack_card_expiry_warning_sent';
+	const SEEDED_META_PREFIX = '_newspack_card_expiry_warning_seeded_';
+
+	/**
+	 * Per-token meta prefix for the actual-send marker.
+	 *
+	 * Written after a successful `Emails::send_email()` call. Always
+	 * blocks re-sends — even when `$bypass_idempotency=true`. This makes
+	 * the CLI backfill silently idempotent across operator re-runs on
+	 * the same window (NPPD-1568): a second invocation hits the SENT
+	 * gate for every pair the first invocation completed.
+	 *
+	 * Invariant: at any moment, a (subscription, token) pair has at most
+	 * ONE of {SEEDED, SENT}, never both. On a CLI-driven release of a
+	 * seeded pair, the SEEDED meta is deleted as SENT is written.
+	 *
+	 * Full meta key = `self::SENT_META_PREFIX . $token->get_id()`.
+	 */
+	const SENT_META_PREFIX = '_newspack_card_expiry_warning_sent_';
 
 	/**
 	 * Option flagging that the first-deploy seed pass has run.
@@ -266,8 +302,8 @@ class Card_Expiry_Warning {
 	 *
 	 * Iterates every currently-in-window (subscription, token) pair the
 	 * normal scan would have sent to, marks each as already-warned via
-	 * SENT_META, and writes the SEEDED_OPTION flag — WITHOUT sending
-	 * anything. Logs the result via Newspack\Logger.
+	 * a per-token SEEDED meta entry, and writes the SEEDED_OPTION flag —
+	 * WITHOUT sending anything. Logs the result via Newspack\Logger.
 	 *
 	 * Sites that DO want to send the deferred warnings should run the
 	 * WP-CLI backfill (see class docblock).
@@ -286,8 +322,14 @@ class Card_Expiry_Warning {
 		$count = 0;
 		foreach ( $pairs as $pair ) {
 			$token      = $pair['token'];
-			$expiry_key = $token->get_id() . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
-			$pair['subscription']->update_meta_data( self::SENT_META, $expiry_key );
+			$token_id   = $token->get_id();
+			$expiry_key = $token_id . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
+			// Per-token meta key (NPPD-1568): a subscription with multiple
+			// in-window CC tokens gets independent suppression state per
+			// token. The earlier single-key shape collapsed all tokens
+			// onto one value and lost suppression for all but the last
+			// iterated token.
+			$pair['subscription']->update_meta_data( self::SEEDED_META_PREFIX . $token_id, $expiry_key );
 			$pair['subscription']->save();
 			++$count;
 		}
@@ -424,16 +466,52 @@ class Card_Expiry_Warning {
 	}
 
 	/**
+	 * Whether this (subscription, token, expiry) tuple has already been
+	 * processed and should be skipped.
+	 *
+	 * Two-prefix schema (see SEEDED_META_PREFIX + SENT_META_PREFIX):
+	 *
+	 *   - SENT_META always blocks. Even with `$bypass_idempotency=true`,
+	 *     a real prior send is never re-sent. This is what makes the CLI
+	 *     backfill silently idempotent across operator re-runs.
+	 *   - SEEDED_META blocks unless `$bypass_idempotency=true`. The seed
+	 *     pass writes it without sending; the CLI bypass is the explicit
+	 *     publisher opt-in to release the deferred warning.
+	 *
+	 * Value-match (`=== $expiry_key`) is intentional, not just key-
+	 * existence. A token's `expiry_month`/`expiry_year` meta can change
+	 * in place — e.g., a Stripe Card Account Updater webhook reissues
+	 * the same `token_id` with a new expiry — and the value-match
+	 * invalidates the stale mark so the next expiry cycle gets warned.
+	 * Replacing this with `metadata_exists()` would silently block the
+	 * new warning. Do NOT simplify to existence-only.
+	 *
+	 * @param \WC_Subscription $subscription       The subscription.
+	 * @param int              $token_id           The CC token id.
+	 * @param string           $expiry_key         `token_id:MM/YYYY`.
+	 * @param bool             $bypass_idempotency When true, ignore the SEEDED gate (SENT still blocks).
+	 * @return bool True if already processed (skip), false if proceed.
+	 */
+	private static function is_already_processed( $subscription, int $token_id, string $expiry_key, bool $bypass_idempotency = false ): bool {
+		if ( $subscription->get_meta( self::SENT_META_PREFIX . $token_id, true ) === $expiry_key ) {
+			return true;
+		}
+		if ( ! $bypass_idempotency && $subscription->get_meta( self::SEEDED_META_PREFIX . $token_id, true ) === $expiry_key ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Send the expiry warning for a subscription.
 	 *
-	 * Steady-state behavior uses per-subscription meta for idempotency:
-	 * the meta value encodes `token_id:expiry_month/year`, so it
-	 * auto-invalidates when the payment method changes or for a new
-	 * expiry cycle.
+	 * Idempotency: gated by `is_already_processed()`, which checks
+	 * per-token SEEDED + SENT meta with value-match against the current
+	 * expiry tuple. See that method's docblock for the schema rationale.
 	 *
-	 * The WP-CLI backfill command passes `$bypass_idempotency=true` so
-	 * that the seeded SENT_META (from the first-deploy seed pass) doesn't
-	 * block its explicit publisher-initiated sends.
+	 * The WP-CLI backfill passes `$bypass_idempotency=true` to release
+	 * seed-suppressed warnings — but SENT still blocks, so a re-run of
+	 * the CLI on the same window is a no-op against the prior send.
 	 *
 	 * @internal Public only so the WP-CLI backfill in
 	 *           `Newspack\CLI\WooCommerce_Subscriptions::card_expiry_warning_backfill()`
@@ -444,16 +522,15 @@ class Card_Expiry_Warning {
 	 * @param \WC_Subscription     $subscription       The subscription.
 	 * @param \WC_Payment_Token_CC $token              The expiring CC token.
 	 * @param bool                 $bypass_idempotency When true, skip the
-	 *                                                 SENT_META check.
+	 *                                                 SEEDED gate. The SENT
+	 *                                                 gate still blocks.
 	 * @return bool Whether the email was sent.
 	 */
 	public static function maybe_send_warning( $subscription, $token, bool $bypass_idempotency = false ): bool {
-		$expiry_key = $token->get_id() . ':'
-			. $token->get_expiry_month() . '/' . $token->get_expiry_year();
+		$token_id   = $token->get_id();
+		$expiry_key = $token_id . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
 
-		// Idempotency: skip if we already sent for this token+expiry combo,
-		// unless the caller is an explicit publisher-initiated backfill.
-		if ( ! $bypass_idempotency && $subscription->get_meta( self::SENT_META, true ) === $expiry_key ) {
+		if ( self::is_already_processed( $subscription, $token_id, $expiry_key, $bypass_idempotency ) ) {
 			return false;
 		}
 
@@ -508,7 +585,12 @@ class Card_Expiry_Warning {
 		);
 
 		if ( $sent ) {
-			$subscription->update_meta_data( self::SENT_META, $expiry_key );
+			// Promote SEEDED → SENT: delete the seed mark first so the
+			// invariant holds (at most one of {SEEDED, SENT} per token).
+			// `delete_meta_data` is a no-op when the key is absent, so
+			// this is safe whether the pair was previously seeded or not.
+			$subscription->delete_meta_data( self::SEEDED_META_PREFIX . $token_id );
+			$subscription->update_meta_data( self::SENT_META_PREFIX . $token_id, $expiry_key );
 			$subscription->save();
 		}
 		return (bool) $sent;
@@ -517,12 +599,29 @@ class Card_Expiry_Warning {
 	/**
 	 * Clear the sent flag when the payment method is updated on a subscription.
 	 *
-	 * Hooked to 'woocommerce_subscription_payment_method_updated'.
+	 * Hooked to 'woocommerce_subscription_payment_method_updated'. Clears
+	 * BOTH SEEDED and SENT per-token entries on the subscription via
+	 * `get_meta_data()` iteration — WC CRUD pattern, composes correctly
+	 * with WC's meta cache and the `woocommerce_after_save_subscription_meta`
+	 * hook chain. (LIKE-query on `wp_postmeta` would be faster on huge
+	 * meta tables but skirts WC's CRUD layer.)
+	 *
+	 * `$changed` guard prevents firing `save()` (and the hooks it
+	 * triggers) when no per-token meta matched.
 	 *
 	 * @param \WC_Subscription $subscription The subscription.
 	 */
 	public static function clear_sent_flag( $subscription ) {
-		$subscription->delete_meta_data( self::SENT_META );
-		$subscription->save();
+		$changed = false;
+		foreach ( $subscription->get_meta_data() as $meta ) {
+			$key = $meta->key;
+			if ( 0 === strpos( $key, self::SEEDED_META_PREFIX ) || 0 === strpos( $key, self::SENT_META_PREFIX ) ) {
+				$subscription->delete_meta_data( $key );
+				$changed = true;
+			}
+		}
+		if ( $changed ) {
+			$subscription->save();
+		}
 	}
 }

@@ -10,9 +10,10 @@
  *   - `get_days_before_expiry()` and `get_limit_per_pass()` filter +
  *     minimum-clamp behavior.
  *   - First-deploy seed flag-setting via the observable side effect on
- *     SEEDED_OPTION. The seed-iteration behavior (marks SENT_META on
- *     in-window pairs without sending) needs real WC Subscriptions +
- *     WCS_Payment_Tokens — covered in the integration smoke script.
+ *     SEEDED_OPTION. The seed-iteration behavior (marks the per-token
+ *     SEEDED meta on in-window pairs without sending) needs real WC
+ *     Subscriptions + WCS_Payment_Tokens — covered in the integration
+ *     smoke script.
  *   - `maybe_send_warning()` signature: confirms the
  *     `$bypass_idempotency` arg defaults to false (cron path
  *     unchanged) — the actual bypass behavior needs real WC and is
@@ -320,7 +321,7 @@ class Newspack_Test_Card_Expiry_Warning extends WP_UnitTestCase {
 	// --------------------------------------------------------------------
 	// First-deploy seed — pins the "Publisher-respect — first-deploy seed"
 	// section of the class docblock. The seed flag-setting is what we can
-	// observe in CI without WC; the per-pair SENT_META marking + the
+	// observe in CI without WC; the per-pair SEEDED meta marking + the
 	// subsequent-scan distinction live in the integration smoke script.
 	// --------------------------------------------------------------------
 
