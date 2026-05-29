@@ -272,6 +272,11 @@ describe( 'Emails', () => {
 		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
 		deactivate.callback( [ mockEmails[ 0 ] ] );
 
+		// updateStatus applies the new status optimistically in local
+		// state before the fetch fires, then passes `onError` only —
+		// rollback on failure, no onSuccess. (Verifying onError exists
+		// instead of onSuccess catches a regression that drops the
+		// rollback path.)
 		expect( mockWizardApiFetch ).toHaveBeenCalledWith(
 			expect.objectContaining( {
 				path: '/wp/v2/newspack_rr_email/1',
@@ -279,7 +284,7 @@ describe( 'Emails', () => {
 				data: { status: 'draft' },
 			} ),
 			expect.objectContaining( {
-				onSuccess: expect.any( Function ),
+				onError: expect.any( Function ),
 			} )
 		);
 	} );
@@ -311,6 +316,9 @@ describe( 'Emails', () => {
 		expect( activate.isEligible( mockEmails[ 4 ] ) ).toBe( true );
 		activate.callback( [ mockEmails[ 4 ] ] );
 
+		// updateStatus applies the new status optimistically — onError
+		// is the only callback (rollback on failure). See the matching
+		// deactivate test above for the same shape.
 		expect( mockWizardApiFetch ).toHaveBeenCalledWith(
 			expect.objectContaining( {
 				path: '/wp/v2/newspack_rr_email/5',
@@ -318,7 +326,7 @@ describe( 'Emails', () => {
 				data: { status: 'publish' },
 			} ),
 			expect.objectContaining( {
-				onSuccess: expect.any( Function ),
+				onError: expect.any( Function ),
 			} )
 		);
 	} );
@@ -367,7 +375,7 @@ describe( 'Emails', () => {
 		);
 	} );
 
-	it( 'reset is eligible when registry_slug is present on a newspack-source row', async () => {
+	it( 'reset is eligible for newspack-source rows', async () => {
 		const Emails = require( './emails' ).default;
 		render( <Emails /> );
 
@@ -376,10 +384,14 @@ describe( 'Emails', () => {
 		} );
 
 		const reset = mockCapturedActions.find( a => a.id === 'reset' );
-		// Newspack-source email with registry_slug — eligible.
+		// Reset's `isEligible` is gated on `item.source === 'newspack'`
+		// only — the legacy registry_slug check was dropped in the
+		// refactor (the registry_slug field is derived from the unified
+		// config, and a Newspack-source row that lacks one is in any
+		// case a Newspack-emails-system error, not a UI-input case to
+		// guard against). The sister test below covers the WC-source
+		// inverse.
 		expect( reset.isEligible( mockEmails[ 0 ] ) ).toBe( true );
-		// Same email without registry_slug — not eligible.
-		expect( reset.isEligible( { ...mockEmails[ 0 ], registry_slug: '' } ) ).toBe( false );
 	} );
 
 	// Slice 2a — WC surfacing tests below.
