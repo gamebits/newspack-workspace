@@ -82,6 +82,12 @@ class Card_Expiry_Warning {
 	 * Initialize hooks and filters.
 	 */
 	public static function init() {
+		// Register the deactivation cleanup outside the is_enabled() guard
+		// so a cron event that was scheduled on an earlier request (when
+		// WC Subs + RA were both enabled) still gets cleared on plugin
+		// deactivation, even if WCS or RA was disabled in between.
+		add_action( 'newspack_deactivation', [ __CLASS__, 'unschedule_cron' ] );
+
 		if ( ! WooCommerce_Subscriptions::is_enabled() ) {
 			return;
 		}
@@ -90,7 +96,6 @@ class Card_Expiry_Warning {
 		add_action( 'init', [ __CLASS__, 'schedule_cron' ] );
 		add_action( self::CRON_HOOK, [ __CLASS__, 'scan_expiring_cards' ] );
 		add_action( 'woocommerce_subscription_payment_method_updated', [ __CLASS__, 'clear_sent_flag' ] );
-		add_action( 'newspack_deactivation', [ __CLASS__, 'unschedule_cron' ] );
 	}
 
 	/**
@@ -206,7 +211,10 @@ class Card_Expiry_Warning {
 	 */
 	public static function schedule_cron() {
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-			wp_schedule_event( time(), 'daily', self::CRON_HOOK );
+			// Defer the first run by 24h so publishers get an opt-in
+			// window after install to review the email template / flip
+			// the email post to draft before the seed pass writes meta.
+			wp_schedule_event( time() + DAY_IN_SECONDS, 'daily', self::CRON_HOOK );
 		}
 	}
 
@@ -232,7 +240,24 @@ class Card_Expiry_Warning {
 			self::get_limit_per_pass()
 		);
 		foreach ( $pairs as $pair ) {
-			self::maybe_send_warning( $pair['subscription'], $pair['token'] );
+			// Per-pair try/catch so a single throwing pair (e.g. an SMTP
+			// filter rejecting a malformed address, a third-party WC hook
+			// that throws on save) doesn't abort the rest of the pass and
+			// skip every later pair until tomorrow's cron.
+			try {
+				self::maybe_send_warning( $pair['subscription'], $pair['token'] );
+			} catch ( \Throwable $e ) {
+				Logger::log(
+					sprintf(
+						'Card expiry warning send failed for subscription %d: %s',
+						$pair['subscription']->get_id(),
+						$e->getMessage()
+					),
+					'NEWSPACK-CARD-EXPIRY',
+					'error'
+				);
+				continue;
+			}
 		}
 	}
 
@@ -248,9 +273,15 @@ class Card_Expiry_Warning {
 	 * WP-CLI backfill (see class docblock).
 	 */
 	private static function seed_in_window_pairs() {
+		// Use PHP_INT_MAX (effectively no SQL LIMIT) so the seed marks
+		// EVERY currently-in-window pair, not just the per-pass cap. The
+		// per-pass cap exists to bound steady-state cron memory; the seed
+		// runs once per install and MUST cover the full window or the
+		// un-seeded remainder leaks into the next cron's normal-scan
+		// branch — exactly the Day-0 burst the seed is built to prevent.
 		$pairs = self::get_in_window_pairs(
 			self::get_days_before_expiry(),
-			self::get_limit_per_pass()
+			PHP_INT_MAX
 		);
 		$count = 0;
 		foreach ( $pairs as $pair ) {
@@ -262,17 +293,22 @@ class Card_Expiry_Warning {
 		}
 		// autoload=false so this option doesn't sit in alloptions on every pageload.
 		update_option( self::SEEDED_OPTION, '1', false );
-		// Logged at 'warning' (vs 'info') so the entry carries a
-		// `[WARNING]:` prefix in error_log output — the seed is a
-		// significant one-time event and a publisher debugging
-		// "card-expiry warnings didn't fire on day 1" needs this entry
-		// to stand out under grep.
-		Logger::log(
-			sprintf(
-				'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
-				$count
-			),
-			'NEWSPACK-CARD-EXPIRY',
+
+		$message = sprintf(
+			'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
+			$count
+		);
+
+		// Logger::log is gated by NEWSPACK_LOG_LEVEL (off on most
+		// production sites). Also fire newspack_log so the event is
+		// visible to Newspack Manager and any other listeners on the
+		// action — the seed is a significant one-time event and must
+		// be diagnostically discoverable.
+		Logger::log( $message, 'NEWSPACK-CARD-EXPIRY', 'warning' );
+		Logger::newspack_log(
+			'card_expiry_warning_seeded',
+			$message,
+			[ 'pair_count' => $count ],
 			'warning'
 		);
 	}
@@ -338,6 +374,16 @@ class Card_Expiry_Warning {
 		// A card with expiry MM/YYYY is valid through the last day of that month.
 		// Find tokens whose last-valid-day falls between today and $cutoff.
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// LENGTH guard on expiry_year: WC_Payment_Token_CC::set_expiry_year
+		// does not zero-pad (unlike set_expiry_month), so legacy 2-digit
+		// values would produce a year-26 date through STR_TO_DATE and
+		// silently fall outside the BETWEEN window. Filter them out at
+		// the SQL level so we don't miss them — they can't be matched
+		// here either way, but the guard makes the skip explicit.
+		// ORDER BY token_id ASC for deterministic ordering across cron
+		// runs (without it, MySQL is free to return any LIMIT-sized
+		// subset and seeding/normal-scan handoffs become unstable on
+		// sites that exceed the per-pass cap).
 		$token_ids = $wpdb->get_col(
 			$wpdb->prepare(
 				"SELECT t.token_id
@@ -347,12 +393,14 @@ class Card_Expiry_Warning {
 				INNER JOIN {$wpdb->prefix}woocommerce_payment_tokenmeta ey
 					ON ey.payment_token_id = t.token_id AND ey.meta_key = 'expiry_year'
 				WHERE t.type = 'CC'
+					AND CHAR_LENGTH( ey.meta_value ) = 4
 					AND LAST_DAY(
 						STR_TO_DATE(
 							CONCAT(ey.meta_value, '-', em.meta_value, '-01'),
 							'%%Y-%%m-%%d'
 						)
 					) BETWEEN %s AND %s
+				ORDER BY t.token_id ASC
 				LIMIT %d",
 				$today,
 				$cutoff,
@@ -416,8 +464,13 @@ class Card_Expiry_Warning {
 
 		$update_url   = \wc_get_account_endpoint_url( 'payment-methods' );
 		$next_payment = $subscription->get_date( 'next_payment' );
+		// Use wp_date() — not date_i18n() — so the GMT timestamp from
+		// WC_Subscription::get_time() is correctly converted into the
+		// site's timezone for display. date_i18n() carries a legacy
+		// quirk that misinterprets GMT timestamps for sites whose
+		// timezone straddles the UTC date boundary.
 		$renewal_date = $next_payment
-			? date_i18n( get_option( 'date_format', 'F j, Y' ), $subscription->get_time( 'next_payment' ) )
+			? wp_date( get_option( 'date_format', 'F j, Y' ), $subscription->get_time( 'next_payment' ) )
 			: __( 'your next renewal', 'newspack-plugin' );
 
 		$first_name = $subscription->get_billing_first_name();

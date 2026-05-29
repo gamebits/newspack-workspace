@@ -11,6 +11,7 @@ use WP_CLI;
 use Newspack\Woocommerce_Subscriptions as WooCommerce_Subscriptions_Integration;
 use Newspack\On_Hold_Duration;
 use Newspack\Card_Expiry_Warning;
+use Newspack\Emails;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -279,8 +280,19 @@ class WooCommerce_Subscriptions {
 			return;
 		}
 
+		// Gate the prompt on the send-precondition so the operator
+		// doesn't confirm "send to N readers" only to discover the email
+		// post is in draft and nothing actually went out. Skip the
+		// guard for --dry-run so publishers can still preview what
+		// would send even with the email unpublished.
 		$is_dry_run = ! empty( $assoc_args['dry-run'] );
-		$days       = isset( $assoc_args['days'] )
+		if ( ! $is_dry_run && ! Emails::can_send_email( Card_Expiry_Warning::EMAIL_TYPE ) ) {
+			WP_CLI::error(
+				'The card-expiry-warning email is not currently sendable. The email post may be in draft status, or Newspack Newsletters is not active. Publish the email and try again.'
+			);
+			return;
+		}
+		$days = isset( $assoc_args['days'] )
 			? max( 1, (int) $assoc_args['days'] )
 			: Card_Expiry_Warning::get_days_before_expiry();
 
