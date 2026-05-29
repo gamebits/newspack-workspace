@@ -28,6 +28,12 @@ class Emails_Section extends Wizard_Section {
 	/**
 	 * Containing wizard slug.
 	 *
+	 * Vestigial: the actual REST path is constructed from `self::REST_BASE`,
+	 * not this property. The parent `Wizard_Section::__construct` overwrites
+	 * this from the `wizard_slug` arg passed by `Wizard::load_wizard_sections`
+	 * anyway. Kept for parity with sibling sections and any inherited base-
+	 * class behavior that reads it.
+	 *
 	 * @var string
 	 */
 	protected $wizard_slug = 'newspack-settings';
@@ -35,9 +41,10 @@ class Emails_Section extends Wizard_Section {
 	/**
 	 * REST base path for Emails endpoints.
 	 *
-	 * Hardcoded to 'newspack-settings' for API stability — even though
-	 * Emails moved to the Audience wizard in NPPD-1538, external callers
-	 * and the frontend depend on this path. Do NOT change.
+	 * Hardcoded to 'newspack-settings' for API stability. When NPPD-1538
+	 * later moves the Emails screen from Newspack > Settings to Audience >
+	 * Configuration, this REST path MUST stay at 'newspack-settings' —
+	 * external callers and the frontend depend on it. Do NOT change.
 	 */
 	const REST_BASE = 'wizard/newspack-settings/emails';
 
@@ -105,6 +112,13 @@ class Emails_Section extends Wizard_Section {
 				'methods'             => WP_REST_Server::DELETABLE,
 				'callback'            => [ __CLASS__, 'api_reset_email' ],
 				'permission_callback' => [ $this, 'api_permissions_check' ],
+				'args'                => [
+					'id' => [
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
+					],
+				],
 			]
 		);
 
@@ -222,7 +236,7 @@ class Emails_Section extends Wizard_Section {
 
 		if ( ! wp_trash_post( $id ) ) {
 			return new WP_Error(
-				'newspack_reset_email_failed',
+				'newspack_reset_email_reset_failed',
 				esc_html__( 'Reset failed: unable to reset email template.', 'newspack-plugin' ),
 				[
 					'status' => 400,

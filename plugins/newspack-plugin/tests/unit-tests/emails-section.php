@@ -522,12 +522,14 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 
 	/*
 	 * ------------------------------------------------------------------
-	 * Bucket E — Reset endpoint (NPPD-1535)
+	 * Bucket F — Reset endpoint (NPPD-1535)
 	 * ------------------------------------------------------------------
 	 * Validates `api_reset_email`, the DELETE
 	 * /wizard/newspack-settings/emails/{id} handler ported from
-	 * Audience_Donations in NPPD-1535. Plus an architectural-lock-in
-	 * assertion that the legacy donations-namespace route is gone.
+	 * Audience_Donations in NPPD-1535. Plus architectural-lock-in
+	 * assertions that the new route is registered with the expected
+	 * permission_callback AND that the legacy donations-namespace route
+	 * is gone.
 	 */
 
 	/**
@@ -558,13 +560,29 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 
 	/**
 	 * Non-existent post ID returns 400 with the invalid_arg error code.
+	 *
+	 * Uses `wp_insert_post` + `wp_delete_post( … true )` to derive a
+	 * guaranteed-missing ID rather than a hardcoded sentinel like
+	 * `999999`. A hardcoded sentinel can collide with a real post in
+	 * long-running test suites or seeded environments — at which point
+	 * the test would fall through to the wrong-post-type branch (same
+	 * error code) and silently pass for the wrong reason.
 	 */
 	public function test_reset_email_invalid_post_id() {
+		$missing_id = wp_insert_post(
+			[
+				'post_type'  => 'post',
+				'post_title' => 'Temp post to derive a guaranteed-missing id',
+			]
+		);
+		wp_delete_post( $missing_id, true );
+
 		$request = new WP_REST_Request( 'DELETE' );
-		$request->set_param( 'id', 999999 );
+		$request->set_param( 'id', $missing_id );
 
 		$response = Emails_Section::api_reset_email( $request );
 
+		$this->assertNull( get_post( $missing_id ), 'Sanity: the derived id must actually be missing.' );
 		$this->assertInstanceOf( WP_Error::class, $response, 'A nonexistent post id must return WP_Error.' );
 		$this->assertSame( 'newspack_reset_email_invalid_arg', $response->get_error_code() );
 		$this->assertSame( 400, $response->get_error_data()['status'] );
@@ -597,46 +615,76 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Permission check blocks unauthenticated callers via the 403
-	 * permission_callback inherited from Wizard_Section.
+	 * Architectural lock-in (permission_callback registration):
 	 *
-	 * The capability check (`manage_options`) lives on the base class,
-	 * not on `api_reset_email`. This test guards against accidentally
-	 * removing the `permission_callback` from the DELETE route's
-	 * registration in a future change.
+	 * The DELETE route's `permission_callback` is the only thing
+	 * blocking unauthenticated callers from trashing email posts.
+	 * Asserting `api_permissions_check()` works in isolation is not
+	 * enough — a regression that drops `'permission_callback' =>
+	 * [ $this, 'api_permissions_check' ]` from the route registration
+	 * would still leave the standalone method working, but WP would
+	 * default the route to `__return_true` (with a _doing_it_wrong
+	 * notice) and the endpoint would be open. So this test introspects
+	 * the actual registered route via `rest_get_server()->get_routes()`
+	 * and asserts the route entry carries a callable
+	 * `permission_callback` that is NOT `__return_true`.
 	 */
-	public function test_reset_email_permission_check() {
+	public function test_reset_email_route_has_permission_callback() {
+		do_action( 'rest_api_init' );
+		$routes    = rest_get_server()->get_routes( NEWSPACK_API_NAMESPACE );
+		$new_path  = '/' . NEWSPACK_API_NAMESPACE . '/wizard/newspack-settings/emails/(?P<id>\d+)';
+		$endpoints = $routes[ $new_path ] ?? [];
+
+		$delete_endpoint = null;
+		foreach ( $endpoints as $endpoint ) {
+			$methods = $endpoint['methods'] ?? [];
+			if ( ! empty( $methods['DELETE'] ) ) {
+				$delete_endpoint = $endpoint;
+				break;
+			}
+		}
+
+		$this->assertNotNull( $delete_endpoint, 'DELETE method on the reset route should be registered.' );
+		$this->assertArrayHasKey( 'permission_callback', $delete_endpoint, 'DELETE route must declare a permission_callback.' );
+		$this->assertNotSame( '__return_true', $delete_endpoint['permission_callback'], 'permission_callback must not default to __return_true (would leave the endpoint open).' );
+		$this->assertIsCallable( $delete_endpoint['permission_callback'], 'permission_callback must be a real callable, not a string placeholder.' );
+
+		// And the callback itself must deny anonymous callers.
+		$prev_user = get_current_user_id();
 		wp_set_current_user( 0 );
+		$result = call_user_func( $delete_endpoint['permission_callback'], new WP_REST_Request( 'DELETE' ) );
+		wp_set_current_user( $prev_user );
 
-		$section = new Emails_Section();
-		$result  = $section->api_permissions_check();
-
-		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertInstanceOf( WP_Error::class, $result, 'Anonymous user must be denied.' );
 		$this->assertSame( 'newspack_rest_forbidden', $result->get_error_code() );
 		$this->assertSame( 403, $result->get_error_data()['status'] );
 	}
 
 	/**
-	 * Architectural lock-in: the legacy donations-namespace reset route
-	 * MUST NOT be re-registered.
+	 * Architectural lock-in (route migration):
 	 *
-	 * NPPD-1535 moved the endpoint to
-	 * `/newspack/v1/wizard/newspack-settings/emails/{id}`. If a future
-	 * change accidentally resurrects the donations-side registration
-	 * (e.g. a bad merge that brings back `api_reset_donation_email`),
-	 * this test fails loudly instead of silently breaking the unified
-	 * emails wizard's reset action.
+	 * 1. Positive: `/newspack/v1/wizard/newspack-settings/emails/(?P<id>\d+)`
+	 *    IS registered. Without this, a refactor that removes both the
+	 *    new and legacy route registrations would silently break the
+	 *    feature while leaving the negative-only assertion below
+	 *    passing.
+	 * 2. Negative: `/newspack/v1/wizard/newspack-audience-donations/emails/(?P<id>\d+)`
+	 *    is NOT registered. NPPD-1535 moved the endpoint; this guards
+	 *    against a bad merge resurrecting `api_reset_donation_email`.
 	 *
-	 * Compare against
-	 * `tests/unit-tests/woocommerce-email-style-sync.php`'s
-	 * `test_no_customize_save_after_or_after_switch_theme_hooks` for
-	 * the same architectural-lock-in pattern.
+	 * Modeled on the route-presence/absence assertion pattern used at
+	 * `tests/unit-tests/corrections.php:53-56` (positive) and
+	 * `tests/unit-tests/content-gate/class-ip-access-rule.php:97-99`
+	 * (route shape introspection).
 	 */
-	public function test_old_donations_namespace_route_no_longer_registered() {
+	public function test_reset_route_moved_to_emails_namespace() {
 		do_action( 'rest_api_init' );
-		$routes      = rest_get_server()->get_routes( NEWSPACK_API_NAMESPACE );
+		$routes = rest_get_server()->get_routes( NEWSPACK_API_NAMESPACE );
+
+		$new_path    = '/' . NEWSPACK_API_NAMESPACE . '/wizard/newspack-settings/emails/(?P<id>\d+)';
 		$legacy_path = '/' . NEWSPACK_API_NAMESPACE . '/wizard/newspack-audience-donations/emails/(?P<id>\d+)';
 
+		$this->assertArrayHasKey( $new_path, $routes, 'The reset route at REST_BASE/{id} must be registered.' );
 		$this->assertArrayNotHasKey(
 			$legacy_path,
 			$routes,

@@ -381,7 +381,7 @@ describe( 'Emails', () => {
 
 		expect( mockWizardApiFetch ).toHaveBeenCalledWith(
 			expect.objectContaining( {
-				path: '/newspack/v1/wizard/newspack-audience-donations/emails/1',
+				path: '/newspack/v1/wizard/newspack-settings/emails/1',
 				method: 'DELETE',
 			} ),
 			expect.objectContaining( {
