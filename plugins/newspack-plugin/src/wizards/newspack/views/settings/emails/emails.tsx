@@ -193,12 +193,9 @@ const Emails = () => {
 
 	const resetEmail = ( postId: number ) => {
 		resetError();
-		// @todo NPPD-1532 Move reset handler to class-emails-section.php so it
-		// lives under wizard/newspack-settings/emails/{id} instead of reaching
-		// into the donations wizard namespace.
 		wizardApiFetch(
 			{
-				path: `/newspack/v1/wizard/newspack-audience-donations/emails/${ postId }`,
+				path: `/newspack/v1/wizard/newspack-settings/emails/${ postId }`,
 				method: 'DELETE',
 			},
 			{
