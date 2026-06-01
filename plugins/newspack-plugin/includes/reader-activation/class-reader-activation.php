@@ -943,26 +943,6 @@ final class Reader_Activation {
 				'href'         => \admin_url( 'edit.php?post_type=newspack_nl_cpt&page=newspack-newsletters' ),
 				'action_text'  => __( 'ESP settings' ),
 			],
-			'emails'           => [
-				'active'      => self::is_transactional_email_configured(),
-				'label'       => __( 'Transactional Emails', 'newspack-plugin' ),
-				'description' => __( 'Your sender name and email address determines how readers find emails related to their account in their inbox. To customize the content of these emails, visit Advanced Settings below.', 'newspack-plugin' ),
-				'help_url'    => 'https://help.newspack.com/engagement/audience-management-system/',
-				'fields'      => [
-					'sender_name'           => [
-						'label'       => __( 'Sender Name', 'newspack-plugin' ),
-						'description' => __( 'Name to use as the sender of transactional emails.', 'newspack-plugin' ),
-					],
-					'sender_email_address'  => [
-						'label'       => __( 'Sender Email Address', 'newspack-plugin' ),
-						'description' => __( 'Email address to use as the sender of transactional emails.', 'newspack-plugin' ),
-					],
-					'contact_email_address' => [
-						'label'       => __( 'Contact Email Address', 'newspack-plugin' ),
-						'description' => __( 'This email will be used as "Reply-To" for transactional emails as well.', 'newspack-plugin' ),
-					],
-				],
-			],
 			'recaptcha'        => [
 				'active'       => self::is_recaptcha_enabled(),
 				'label'        => __( 'reCAPTCHA', 'newspack-plugin' ),
