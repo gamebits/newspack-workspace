@@ -32,6 +32,16 @@ class Emails_Section extends Wizard_Section {
 	protected $wizard_slug = 'newspack-settings';
 
 	/**
+	 * REST base path for Emails endpoints.
+	 *
+	 * Hardcoded to 'newspack-settings' for API stability. When NPPD-1538
+	 * later moves the Emails screen from Newspack > Settings to Audience >
+	 * Configuration, this REST path MUST stay at 'newspack-settings' —
+	 * external callers and the frontend depend on it. Do NOT change.
+	 */
+	const REST_BASE = 'wizard/newspack-settings/emails';
+
+	/**
 	 * Constructor — extends Wizard_Section's REST-route hookup with an
 	 * admin_init handler for the WC first-run auto-enable. Decoupling
 	 * first-run from api_get_email_settings keeps the GET endpoint
@@ -78,6 +88,55 @@ class Emails_Section extends Wizard_Section {
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => [ __CLASS__, 'api_get_email_settings' ],
 				'permission_callback' => [ $this, 'api_permissions_check' ],
+			]
+		);
+
+		// GET — Read the three transactional-email setting values used
+		// by `Emails::get_from_name()`, `get_from_email()`, and
+		// `get_reply_to_email()`. Reads through
+		// `Reader_Activation::get_setting()` so the response carries the
+		// same defaults (blog name, no-reply address, admin email) that
+		// the email-send path sees when no override has been saved.
+		register_rest_route(
+			NEWSPACK_API_NAMESPACE,
+			self::REST_BASE . '/settings',
+			[
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => [ __CLASS__, 'api_get_settings' ],
+				'permission_callback' => [ $this, 'api_permissions_check' ],
+			]
+		);
+
+		// POST — Save the three transactional-email setting values.
+		// Args-block sanitization is belt-and-suspenders; the handler
+		// re-validates via `is_email()` because `sanitize_email()` leaves
+		// partials intact (e.g. "user@" passes sanitize but fails is_email).
+		// Writes delegate to `Reader_Activation::update_setting()`, which
+		// preserves the `newspack_reader_activation_*` option-key location.
+		register_rest_route(
+			NEWSPACK_API_NAMESPACE,
+			self::REST_BASE . '/settings',
+			[
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => [ __CLASS__, 'api_update_settings' ],
+				'permission_callback' => [ $this, 'api_permissions_check' ],
+				'args'                => [
+					'sender_name'           => [
+						'type'              => 'string',
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_text_field',
+					],
+					'sender_email_address'  => [
+						'type'              => 'string',
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_email',
+					],
+					'contact_email_address' => [
+						'type'              => 'string',
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_email',
+					],
+				],
 			]
 		);
 
@@ -589,5 +648,122 @@ class Emails_Section extends Wizard_Section {
 			],
 			admin_url( 'admin.php' )
 		);
+	}
+
+	/**
+	 * Get the three transactional-email setting values + their derived
+	 * defaults.
+	 *
+	 * Returns the raw saved values (empty string when nothing has been
+	 * saved) alongside the derived defaults so the frontend can render
+	 * value vs. placeholder distinctly. Reading via
+	 * `Reader_Activation::get_setting()` instead would collapse the two
+	 * into a single resolved value — losing the distinction the modal
+	 * needs to keep publishers from accidentally locking in derived
+	 * defaults as static option rows on first save.
+	 *
+	 * Default-source computation is inlined rather than abstracted into
+	 * `Emails`. The `Emails::get_from_*()` helpers return the *resolved*
+	 * value (saved override OR derived fallback), so calling them here
+	 * for the "default" slot would just return the saved value when one
+	 * exists — defeating the purpose of returning both separately.
+	 * Mirror the fallback logic from `Emails::get_from_email()` for the
+	 * sender-email default (network_home_url host, w/o `www.` prefix).
+	 *
+	 * @return \WP_REST_Response
+	 */
+	public static function api_get_settings() {
+		$home_host = (string) wp_parse_url( network_home_url(), PHP_URL_HOST );
+		if ( 'www.' === substr( $home_host, 0, 4 ) ) {
+			$home_host = substr( $home_host, 4 );
+		}
+
+		return rest_ensure_response(
+			[
+				'sender_name'           => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_name', '' ),
+				'sender_email_address'  => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_email_address', '' ),
+				'contact_email_address' => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'contact_email_address', '' ),
+				'defaults'              => [
+					'sender_name'           => get_bloginfo( 'name' ),
+					'sender_email_address'  => 'no-reply@' . $home_host,
+					'contact_email_address' => get_bloginfo( 'admin_email' ),
+				],
+			]
+		);
+	}
+
+	/**
+	 * Update the three transactional-email setting values.
+	 *
+	 * Empty value semantics: an empty string for any field means "revert
+	 * to the derived default" — the option row is deleted so subsequent
+	 * `get_from_*()` reads fall through to bloginfo / domain / admin
+	 * email. Without this, a publisher who'd never explicitly saved
+	 * could open the modal, see the derived defaults populated, hit
+	 * Save without realizing, and lock those derived values in as
+	 * static rows — breaking the dynamic-default behavior (later
+	 * site-title changes would no longer propagate to sender_name,
+	 * etc.).
+	 *
+	 * Format validation runs only on non-empty values. Email fields
+	 * must match `is_email()` when present; empty is treated as the
+	 * intentional-revert path, not as a validation error.
+	 *
+	 * Writes delegate to `Reader_Activation::update_setting()` for the
+	 * non-empty path (preserves the `newspack_reader_activation_*`
+	 * option-key location). Empty values bypass `update_setting` and
+	 * call `delete_option` directly — `update_setting` writes empty
+	 * strings via `update_option`, which would leave zombie option
+	 * rows; deleting is tidier and matches the "revert" intent.
+	 *
+	 * Mirrors the GET response shape so the frontend can confirm the
+	 * saved state without a second round-trip.
+	 *
+	 * @param \WP_REST_Request $request Request object.
+	 * @return \WP_Error|\WP_REST_Response Saved values, or 400 on validation failure.
+	 */
+	public static function api_update_settings( $request ) {
+		$sender_name           = $request->get_param( 'sender_name' );
+		$sender_email_address  = $request->get_param( 'sender_email_address' );
+		$contact_email_address = $request->get_param( 'contact_email_address' );
+
+		// Format validation runs only when the value is non-empty.
+		// Empty is the intentional "revert to default" path, not an
+		// error. `sanitize_email` returns "" for completely invalid
+		// input but leaves partials ("user@") intact, so the
+		// non-empty check is combined with `is_email()`.
+		if ( '' !== $sender_email_address && ! is_email( $sender_email_address ) ) {
+			return new \WP_Error(
+				'newspack_invalid_sender_email',
+				esc_html__( 'Sender email address must be a valid email address.', 'newspack-plugin' ),
+				[ 'status' => 400 ]
+			);
+		}
+		if ( '' !== $contact_email_address && ! is_email( $contact_email_address ) ) {
+			return new \WP_Error(
+				'newspack_invalid_contact_email',
+				esc_html__( 'Contact email address must be a valid email address.', 'newspack-plugin' ),
+				[ 'status' => 400 ]
+			);
+		}
+
+		$updates = [
+			'sender_name'           => $sender_name,
+			'sender_email_address'  => $sender_email_address,
+			'contact_email_address' => $contact_email_address,
+		];
+		foreach ( $updates as $key => $value ) {
+			if ( '' === $value ) {
+				delete_option( Reader_Activation::OPTIONS_PREFIX . $key );
+			} else {
+				Reader_Activation::update_setting( $key, $value );
+			}
+		}
+
+		// Re-read via api_get_settings() so the response carries the
+		// refreshed value/default pair — saving an empty value flips
+		// the field's "value" back to '' and the frontend's placeholder
+		// path picks up the derived default again.
+		return self::api_get_settings();
 	}
 }
