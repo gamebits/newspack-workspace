@@ -858,6 +858,112 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Re-saving the same value must return success, not 500.
+	 *
+	 * WordPress's `update_option()` returns false in two distinct
+	 * cases: genuine write failure AND no-op (new value === current
+	 * value). The handler's `! update_setting(...)` check treats
+	 * both as failure. Without a pre-check skipping no-ops, hitting
+	 * Save twice in a row with the same value 500s on the second
+	 * call. Pre-check via `get_option` and `continue` past unchanged
+	 * fields.
+	 *
+	 * Also asserts the action hook does NOT fire on the no-op
+	 * re-save — "this changed" semantics. (`update_setting`
+	 * unconditionally fires the hook before reaching update_option,
+	 * so the only way to keep the no-op silent is to bypass
+	 * update_setting entirely when value is unchanged.)
+	 */
+	public function test_post_settings_idempotent_when_value_unchanged() {
+		// First save.
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', 'Same Site' );
+		$request->set_param( 'sender_email_address', 'same@example.test' );
+		$request->set_param( 'contact_email_address', 'same-contact@example.test' );
+
+		$first_response = Emails_Section::api_update_settings( $request );
+		$this->assertNotInstanceOf( WP_Error::class, $first_response );
+
+		// Second save with identical values — must NOT 500.
+		$captured = [];
+		$callback = function ( $key, $value ) use ( &$captured ) {
+			$captured[] = [ $key, $value ];
+		};
+		add_action( 'newspack_reader_activation_update_setting', $callback, 10, 2 );
+
+		$second_response = Emails_Section::api_update_settings( $request );
+
+		remove_action( 'newspack_reader_activation_update_setting', $callback, 10 );
+
+		$this->assertNotInstanceOf(
+			WP_Error::class,
+			$second_response,
+			'Re-saving identical values must not 500. update_option() returns false on no-op, which the handler must distinguish from genuine write failure.'
+		);
+		$this->assertSame(
+			[],
+			$captured,
+			'newspack_reader_activation_update_setting must NOT fire on no-op re-saves — the hook means "this changed", not "this was submitted".'
+		);
+
+		// Response shape is still correct (reads back current state).
+		$data = $second_response->get_data();
+		$this->assertSame( 'Same Site', $data['sender_name'] );
+		$this->assertSame( 'same@example.test', $data['sender_email_address'] );
+		$this->assertSame( 'same-contact@example.test', $data['contact_email_address'] );
+
+		delete_option( 'newspack_reader_activation_sender_name' );
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
+	 * Empty-revert on an already-absent option must be a no-op:
+	 * delete_option returns false when the row doesn't exist (same
+	 * return as a genuine failure, but semantically different), and
+	 * firing the action hook would be a phantom "change" event with
+	 * nothing actually changing.
+	 */
+	public function test_post_settings_empty_value_idempotent_when_already_empty() {
+		// Belt-and-suspenders: ensure no row exists.
+		delete_option( 'newspack_reader_activation_sender_name' );
+
+		$captured = [];
+		$callback = function ( $key, $value ) use ( &$captured ) {
+			$captured[] = [ $key, $value ];
+		};
+		add_action( 'newspack_reader_activation_update_setting', $callback, 10, 2 );
+
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', '' );
+		$request->set_param( 'sender_email_address', 'sender@example.test' );
+		$request->set_param( 'contact_email_address', 'contact@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+
+		remove_action( 'newspack_reader_activation_update_setting', $callback, 10 );
+
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+
+		// Action hook should NOT have fired for sender_name — there
+		// was no row to delete, no actual change. The two non-empty
+		// writes DO fire the hook via update_setting() internally,
+		// but the empty-already-absent path must stay silent.
+		$sender_name_events = array_filter( $captured, fn( $e ) => 'sender_name' === $e[0] );
+		$this->assertSame(
+			[],
+			array_values( $sender_name_events ),
+			'Empty-revert on an already-absent option must not fire the update_setting action hook.'
+		);
+
+		// And the option row still doesn't exist (we didn't accidentally create one).
+		$this->assertFalse( get_option( 'newspack_reader_activation_sender_name' ) );
+
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
 	 * The settings endpoints inherit Wizard_Section's manage_options
 	 * default — a subscriber-level user hitting api_permissions_check()
 	 * gets WP_Error 403. Both GET and POST share the same permission

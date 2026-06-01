@@ -772,8 +772,18 @@ class Emails_Section extends Wizard_Section {
 			'contact_email_address' => $contact_email_address,
 		];
 		foreach ( $updates as $key => $value ) {
+			$option_key = Reader_Activation::OPTIONS_PREFIX . $key;
+
 			if ( '' === $value ) {
-				delete_option( Reader_Activation::OPTIONS_PREFIX . $key );
+				// Empty = revert. Skip when there's no row to delete:
+				// otherwise the delete + action hook fire as a phantom
+				// "change" event with nothing actually changing. The
+				// hook contract is "this setting changed" — re-saving
+				// an already-absent value isn't a change.
+				if ( false === get_option( $option_key, false ) ) {
+					continue;
+				}
+				delete_option( $option_key );
 
 				// Mirror the action `Reader_Activation::update_setting()`
 				// fires for writes so external subscribers (audit logs,
@@ -783,14 +793,34 @@ class Emails_Section extends Wizard_Section {
 				// stored state and any external mirror built from the
 				// hook.
 				do_action( 'newspack_reader_activation_update_setting', $key, '' );
-			} elseif ( ! Reader_Activation::update_setting( $key, $value ) ) {
+				continue;
+			}
+
+			// Non-empty = write. Pre-check current value and skip
+			// no-op saves: WordPress's `update_option()` returns
+			// false in two distinct cases — genuine write failure
+			// AND no-op (new value === current value). Without this
+			// pre-check, a publisher re-saving the same value
+			// (deliberately, or because the modal opened with
+			// already-saved state) would hit the WP_Error branch and
+			// see a 500 with no actual problem. Skipping no-ops also
+			// keeps the `newspack_reader_activation_update_setting`
+			// action hook semantically honest — "this changed" means
+			// it actually changed, not "this was submitted".
+			if ( get_option( $option_key, '' ) === $value ) {
+				continue;
+			}
+
+			if ( ! Reader_Activation::update_setting( $key, $value ) ) {
 				// `update_setting()` returns false when the key isn't
 				// in `get_settings_config()` (legitimate via the
 				// `newspack_reader_activation_settings_config` filter)
-				// or when `update_option()` itself fails. Convert the
-				// silent fail into a visible 500 so the frontend
-				// renders an inline error rather than a misleading
-				// success notice.
+				// or when `update_option()` itself fails for a real
+				// reason (DB write error, etc.) — the no-op case is
+				// already filtered out above. Convert the silent fail
+				// into a visible 500 so the frontend renders an
+				// inline error rather than a misleading success
+				// notice.
 				return new \WP_Error(
 					'newspack_settings_write_failed',
 					esc_html__( 'Could not save transactional email settings.', 'newspack-plugin' ),
