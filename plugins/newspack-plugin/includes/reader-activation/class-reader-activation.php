@@ -848,10 +848,21 @@ final class Reader_Activation {
 	/**
 	 * Are all prerequisites for Reader Activation complete?
 	 *
+	 * The `is_transactional_email_configured()` check was previously
+	 * AND'd into this gate. NPPD-1566 dropped it: the three
+	 * transactional-email options now have valid derived defaults (blog
+	 * title, no-reply@host, admin email) returned from the Emails
+	 * Settings modal's GET endpoint, so requiring publishers to
+	 * EXPLICITLY save those values is no longer the right gate — the
+	 * dynamic defaults are valid by construction. Without dropping the
+	 * AND clause, fresh-install publishers could satisfy every
+	 * remaining surfaced prereq and still find RAS stuck-disabled with
+	 * no in-flow hint pointing at the (now non-prereq) Emails settings.
+	 *
 	 * @return bool
 	 */
 	public static function is_ras_ready_to_configure() {
-		$is_ready = self::is_terms_configured( true ) && self::is_esp_configured() && self::is_transactional_email_configured() && self::is_recaptcha_enabled( true ) && self::is_woocommerce_active();
+		$is_ready = self::is_terms_configured( true ) && self::is_esp_configured() && self::is_recaptcha_enabled( true ) && self::is_woocommerce_active();
 
 		// If all requirements are met or skipped, and RAS isn't yet enabled, enable it.
 		if ( $is_ready && self::is_ras_campaign_configured( true ) && ! self::is_enabled() ) {

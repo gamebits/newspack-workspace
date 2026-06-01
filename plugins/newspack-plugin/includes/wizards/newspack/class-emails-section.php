@@ -126,15 +126,27 @@ class Emails_Section extends Wizard_Section {
 						'required'          => true,
 						'sanitize_callback' => 'sanitize_text_field',
 					],
+					// Email fields use `sanitize_text_field`, NOT
+					// `sanitize_email`. `sanitize_email` collapses
+					// partially-typed input ('user@', 'newaddress') to
+					// '' BEFORE the handler runs — which then treats
+					// the empty value as "intentional revert" and
+					// `delete_option`s the publisher's previously
+					// saved override. The `newspack_invalid_sender_email`
+					// / `newspack_invalid_contact_email` WP_Errors
+					// would be unreachable for typo input. Use
+					// `sanitize_text_field` to preserve the typo so the
+					// handler's `is_email()` guard rejects it with a
+					// proper 400.
 					'sender_email_address'  => [
 						'type'              => 'string',
 						'required'          => true,
-						'sanitize_callback' => 'sanitize_email',
+						'sanitize_callback' => 'sanitize_text_field',
 					],
 					'contact_email_address' => [
 						'type'              => 'string',
 						'required'          => true,
-						'sanitize_callback' => 'sanitize_email',
+						'sanitize_callback' => 'sanitize_text_field',
 					],
 				],
 			]
@@ -678,6 +690,13 @@ class Emails_Section extends Wizard_Section {
 			$home_host = substr( $home_host, 4 );
 		}
 
+		// Guard the empty-host edge: when wp_parse_url can't extract a
+		// host (malformed siteurl, edge multisite configs), don't emit
+		// a visibly-broken `no-reply@` placeholder to the publisher.
+		// Empty default = the input renders without a hint, which is
+		// better UX than an obviously-truncated address.
+		$sender_email_default = '' === $home_host ? '' : 'no-reply@' . $home_host;
+
 		return rest_ensure_response(
 			[
 				'sender_name'           => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_name', '' ),
@@ -685,7 +704,7 @@ class Emails_Section extends Wizard_Section {
 				'contact_email_address' => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'contact_email_address', '' ),
 				'defaults'              => [
 					'sender_name'           => get_bloginfo( 'name' ),
-					'sender_email_address'  => 'no-reply@' . $home_host,
+					'sender_email_address'  => $sender_email_default,
 					'contact_email_address' => get_bloginfo( 'admin_email' ),
 				],
 			]
@@ -755,8 +774,28 @@ class Emails_Section extends Wizard_Section {
 		foreach ( $updates as $key => $value ) {
 			if ( '' === $value ) {
 				delete_option( Reader_Activation::OPTIONS_PREFIX . $key );
-			} else {
-				Reader_Activation::update_setting( $key, $value );
+
+				// Mirror the action `Reader_Activation::update_setting()`
+				// fires for writes so external subscribers (audit logs,
+				// ESP sync) observe revert-to-default as a setting
+				// change. Without this, the delete path is invisible
+				// to hook listeners and produces drift between the
+				// stored state and any external mirror built from the
+				// hook.
+				do_action( 'newspack_reader_activation_update_setting', $key, '' );
+			} elseif ( ! Reader_Activation::update_setting( $key, $value ) ) {
+				// `update_setting()` returns false when the key isn't
+				// in `get_settings_config()` (legitimate via the
+				// `newspack_reader_activation_settings_config` filter)
+				// or when `update_option()` itself fails. Convert the
+				// silent fail into a visible 500 so the frontend
+				// renders an inline error rather than a misleading
+				// success notice.
+				return new \WP_Error(
+					'newspack_settings_write_failed',
+					esc_html__( 'Could not save transactional email settings.', 'newspack-plugin' ),
+					[ 'status' => 500 ]
+				);
 			}
 		}
 

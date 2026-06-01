@@ -410,7 +410,13 @@ const Emails = () => {
 			<PageHeading />
 			{ errorMessage && <Notice isError noticeText={ errorMessage } /> }
 			<HStack className="newspack-emails__chip-bar" justify="space-between" alignment="center">
-				<div className="newspack-emails__chips" role="group" aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }>
+				<HStack
+					className="newspack-emails__chips"
+					role="group"
+					aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }
+					spacing={ 2 }
+					justify="flex-start"
+				>
 					{ CHIPS.map( chip => {
 						// During an active search, neither chip is filtering —
 						// render both as unpressed so the visual matches reality.
@@ -429,7 +435,7 @@ const Emails = () => {
 							</Button>
 						);
 					} ) }
-				</div>
+				</HStack>
 				<Button variant="secondary" onClick={ () => setShowSettingsModal( true ) }>
 					{ __( 'Settings', 'newspack-plugin' ) }
 				</Button>

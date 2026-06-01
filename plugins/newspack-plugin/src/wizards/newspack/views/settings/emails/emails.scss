@@ -37,10 +37,10 @@
 	padding: 0 24px;
 }
 
+// Layout (display: flex, gap) is provided by the HStack wrapper —
+// `spacing={2}` is WP's 8px grid unit, matching the previous custom
+// `gap: 8px`. Only the chip-pill visual styling stays in SCSS.
 .newspack-emails__chips {
-	display: flex;
-	gap: 8px;
-
 	// Nested for specificity over WP Button defaults — without the
 	// `.components-button` chain, the pill shape and padding lose to
 	// WP's default button styling.

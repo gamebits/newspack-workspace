@@ -13,7 +13,7 @@
  * WordPress dependencies.
  */
 import { __ } from '@wordpress/i18n';
-import { useState, useEffect, useMemo } from '@wordpress/element';
+import { useState, useEffect } from '@wordpress/element';
 import {
 	TextControl,
 	__experimentalHStack as HStack, // eslint-disable-line @wordpress/no-unsafe-wp-apis
@@ -77,6 +77,16 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 			return;
 		}
 		resetError();
+		// Reset local snapshot before the GET so reopen renders an
+		// empty form (gated from Save by `! loaded`) instead of
+		// briefly flashing the previous open's values. Without this,
+		// the first paint after reopen renders whatever was in state
+		// when the modal last closed — confusing if a concurrent
+		// actor (CLI, second admin tab) changed the underlying options
+		// between sessions.
+		setSettings( EMPTY_SETTINGS );
+		setInitial( EMPTY_SETTINGS );
+		setDefaults( EMPTY_SETTINGS );
 		setLoaded( false );
 		wizardApiFetch< TransactionalEmailSettingsResponse >(
 			{
@@ -117,13 +127,13 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 	// Client-side validation: empty is the intentional "revert to
 	// default" path, so it's accepted for every field. Email fields
 	// must validate when non-empty. Sender name has no format
-	// requirement.
-	const isClientSideValid = useMemo( () => {
-		return (
-			( settings.sender_email_address === '' || isValidEmail( settings.sender_email_address ) ) &&
-			( settings.contact_email_address === '' || isValidEmail( settings.contact_email_address ) )
-		);
-	}, [ settings ] );
+	// requirement. Plain expression rather than `useMemo` — the dep
+	// `settings` is a new object reference on every keystroke, so a
+	// memo would never hit; the wrapping was misleading without
+	// behavior.
+	const isClientSideValid =
+		( settings.sender_email_address === '' || isValidEmail( settings.sender_email_address ) ) &&
+		( settings.contact_email_address === '' || isValidEmail( settings.contact_email_address ) );
 
 	const handleSave = () => {
 		if ( isFetching ) {
@@ -194,9 +204,17 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 	}
 
 	return (
-		<div>
+		// The wrapping div is an escape hatch for a ReactNode/ReactElement
+		// type mismatch on `confirmDialog` — Fragment-wrapping triggers a
+		// TS error against the React 18 strict ReactNode shape. Both
+		// Modal and confirmDialog portal to document.body, so this div
+		// has no rendered children and occupies a zero-height slot in
+		// the Emails view flow. The class is here so future CSS can
+		// target it intentionally (or, more importantly, NOT target it
+		// via accidental sibling-combinator selectors on unclassed divs).
+		<div className="newspack-emails__settings-modal-wrap">
 			{ confirmDialog }
-			<Modal onClose={ handleClose } onRequestClose={ handleClose } size="medium" title={ __( 'Settings', 'newspack-plugin' ) }>
+			<Modal onRequestClose={ handleClose } size="medium" title={ __( 'Settings', 'newspack-plugin' ) }>
 				<p>{ __( 'Configure the sender details and reply-to address for transactional emails sent to your readers.', 'newspack-plugin' ) }</p>
 				{ errorMessage && <Notice isError noticeText={ errorMessage } /> }
 				<VStack>

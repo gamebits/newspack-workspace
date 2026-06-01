@@ -624,8 +624,17 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 
 	/**
 	 * Invalid sender_email_address returns 400 + newspack_invalid_sender_email.
-	 * Mirrors what sanitize_email + is_email() do in production: "not-an-email"
-	 * fails is_email() at the handler's re-validation step.
+	 *
+	 * The handler call below mirrors what reaches it through the live
+	 * REST route: the args' `sanitize_text_field` callback passes
+	 * 'not-an-email' through unchanged (sanitize_text_field strips
+	 * tags + trims whitespace, but does not collapse non-email input).
+	 * The handler's `is_email()` guard then rejects it with 400. This
+	 * test would silently succeed against an unreachable code path if
+	 * the args callback ever regressed to `sanitize_email`, which
+	 * collapses the input to '' BEFORE the handler sees it — and the
+	 * empty-as-revert branch would then delete the publisher's
+	 * previously saved override without surfacing a validation error.
 	 */
 	public function test_post_settings_rejects_invalid_email_in_sender() {
 		$request = new WP_REST_Request( 'POST' );
@@ -655,6 +664,90 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		$this->assertInstanceOf( WP_Error::class, $response );
 		$this->assertSame( 'newspack_invalid_contact_email', $response->get_error_code() );
 		$this->assertSame( 400, $response->get_error_data()['status'] );
+	}
+
+	/**
+	 * Regression guard: the args' `sanitize_callback` for email fields
+	 * must NOT be `sanitize_email`. Dispatching a typo email through
+	 * the live REST route runs the args sanitize before the handler;
+	 * `sanitize_email` collapses non-conforming input to '' so the
+	 * handler's `'' === $value` branch would `delete_option()` the
+	 * publisher's saved override and return 200 OK — bypassing the
+	 * `is_email()` validation entirely. `sanitize_text_field`
+	 * preserves the typo so the handler rejects it with a proper 400.
+	 *
+	 * This test introspects the actually-registered route's args
+	 * config rather than running the route end-to-end, because the
+	 * test bootstrap doesn't always register Newspack REST routes
+	 * deterministically.
+	 */
+	public function test_post_settings_args_use_text_field_sanitizer_for_emails() {
+		// register_rest_route normally complains when called outside
+		// `rest_api_init`; we're calling register_rest_routes()
+		// directly to introspect what would be registered through the
+		// normal lifecycle. Acknowledge the notice rather than fire
+		// the whole action chain (which would re-register every
+		// Newspack REST route as a side effect).
+		$this->setExpectedIncorrectUsage( 'register_rest_route' );
+
+		global $wp_rest_server;
+		$prev_server    = $wp_rest_server;
+		$wp_rest_server = new WP_REST_Server();
+		( new Emails_Section( [ 'wizard_slug' => 'newspack-settings' ] ) )->register_rest_routes();
+		$routes         = $wp_rest_server->get_routes();
+		$wp_rest_server = $prev_server;
+
+		$route_key = '/' . NEWSPACK_API_NAMESPACE . '/wizard/newspack-settings/emails/settings';
+		$this->assertArrayHasKey( $route_key, $routes );
+
+		// Find the POST endpoint config in the registered routes. WP
+		// stores `methods` as an associative array of method => true.
+		$post_endpoint = null;
+		foreach ( $routes[ $route_key ] as $endpoint ) {
+			if ( ! empty( $endpoint['methods']['POST'] ) ) {
+				$post_endpoint = $endpoint;
+				break;
+			}
+		}
+		$this->assertNotNull( $post_endpoint, 'POST endpoint should be registered.' );
+
+		foreach ( [ 'sender_email_address', 'contact_email_address' ] as $field ) {
+			$this->assertNotSame(
+				'sanitize_email',
+				$post_endpoint['args'][ $field ]['sanitize_callback'] ?? null,
+				"sanitize_email on '$field' silently collapses typo input to '' before the handler runs, defeating the is_email() guard. Use sanitize_text_field."
+			);
+			$this->assertSame(
+				'sanitize_text_field',
+				$post_endpoint['args'][ $field ]['sanitize_callback'] ?? null,
+				"Expected '$field' to use sanitize_text_field as args sanitize callback."
+			);
+		}
+	}
+
+	/**
+	 * GET response includes a `defaults` block. When network_home_url
+	 * cannot extract a host (rare, malformed siteurl), the
+	 * sender_email_address default must NOT be the broken `no-reply@`
+	 * string — the response should either be empty or carry a usable
+	 * fallback. Verified at the value level by stubbing the host
+	 * derivation via a filter is more involved than worth here; this
+	 * test instead asserts the happy-path positive: when a host is
+	 * present, the default starts with `no-reply@` AND has at least
+	 * one character after the `@`.
+	 */
+	public function test_get_settings_default_sender_email_has_non_empty_host() {
+		$data = Emails_Section::api_get_settings()->get_data();
+		$sender_default = $data['defaults']['sender_email_address'];
+		// Empty is the explicit revert/guard path; a non-empty default
+		// must always look like a real email (no bare `no-reply@`).
+		if ( '' !== $sender_default ) {
+			$this->assertMatchesRegularExpression(
+				'/^no-reply@.+$/',
+				$sender_default,
+				'sender_email default must carry a host after the @ symbol, or be empty when host derivation fails.'
+			);
+		}
 	}
 
 	/**
@@ -688,6 +781,77 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		$this->assertSame( '', $data['sender_name'] );
 		$this->assertSame( 'sender@example.test', $data['sender_email_address'] );
 		$this->assertSame( 'contact@example.test', $data['contact_email_address'] );
+
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
+	 * If `Reader_Activation::update_setting()` returns false (the key
+	 * was removed from get_settings_config(), e.g. via the
+	 * `newspack_reader_activation_settings_config` filter, or
+	 * update_option itself failed), the handler must surface a
+	 * `newspack_settings_write_failed` WP_Error rather than silently
+	 * proceed to return `api_get_settings()` — which would look like a
+	 * successful save while the option was never written.
+	 */
+	public function test_post_settings_returns_error_when_update_setting_fails() {
+		$filter = function ( $config ) {
+			unset( $config['sender_name'] );
+			return $config;
+		};
+		add_filter( 'newspack_reader_activation_settings_config', $filter );
+
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', 'My Site' );
+		$request->set_param( 'sender_email_address', 'sender@example.test' );
+		$request->set_param( 'contact_email_address', 'contact@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+
+		remove_filter( 'newspack_reader_activation_settings_config', $filter );
+
+		// The filter-removal of sender_name causes update_setting() to
+		// return false on the first non-empty write; the handler must
+		// convert that into a visible 500 rather than the misleading
+		// 200 OK + empty re-read.
+		$this->assertInstanceOf( WP_Error::class, $response );
+		$this->assertSame( 'newspack_settings_write_failed', $response->get_error_code() );
+		$this->assertSame( 500, $response->get_error_data()['status'] );
+	}
+
+	/**
+	 * Empty-value revert path fires `newspack_reader_activation_update_setting`
+	 * with an empty value so external subscribers (audit logs, ESP
+	 * sync) observe the change. Without this, the delete path would
+	 * be invisible to hook listeners, producing drift between the
+	 * stored state and any external mirror built from the hook.
+	 */
+	public function test_post_settings_empty_value_fires_update_setting_action() {
+		update_option( 'newspack_reader_activation_sender_name', 'Old Override' );
+
+		$captured = [];
+		$callback = function ( $key, $value ) use ( &$captured ) {
+			$captured[] = [ $key, $value ];
+		};
+		add_action( 'newspack_reader_activation_update_setting', $callback, 10, 2 );
+
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', '' );
+		$request->set_param( 'sender_email_address', 'sender@example.test' );
+		$request->set_param( 'contact_email_address', 'contact@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+
+		remove_action( 'newspack_reader_activation_update_setting', $callback, 10 );
+
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+
+		// Should have fired for sender_name (empty/revert path) and
+		// the two non-empty writes (via update_setting internal).
+		$sender_name_events = array_filter( $captured, fn( $e ) => 'sender_name' === $e[0] );
+		$this->assertCount( 1, $sender_name_events, 'Empty-revert path should fire update_setting action once.' );
+		$this->assertSame( '', array_values( $sender_name_events )[0][1] );
 
 		delete_option( 'newspack_reader_activation_sender_email_address' );
 		delete_option( 'newspack_reader_activation_contact_email_address' );
