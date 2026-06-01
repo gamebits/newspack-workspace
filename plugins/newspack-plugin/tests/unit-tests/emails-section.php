@@ -519,4 +519,200 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 		$this->assertSame( [], Emails_Section::filter_configs_by_ra_state( true, [] ) );
 		$this->assertSame( [], Emails_Section::filter_configs_by_ra_state( false, [] ) );
 	}
+
+	/*
+	 * ------------------------------------------------------------------
+	 * Bucket F — Settings endpoint (NPPD-1566)
+	 * ------------------------------------------------------------------
+	 * GET + POST /wizard/newspack-settings/emails/settings carry the
+	 * three transactional-email setting values (sender_name,
+	 * sender_email_address, contact_email_address) previously surfaced
+	 * in the Reader Activation prerequisite card. The endpoint lives
+	 * in Emails_Section; writes delegate to Reader_Activation::update_setting()
+	 * so the underlying newspack_reader_activation_* wp_options keys
+	 * are unchanged.
+	 */
+
+	/**
+	 * GET returns the three saved values + a `defaults` sub-array with
+	 * the derived defaults. Saved values come through as the option
+	 * values; defaults stay constant regardless of overrides.
+	 */
+	public function test_get_settings_returns_three_fields() {
+		update_option( 'newspack_reader_activation_sender_name', 'Test Sender' );
+		update_option( 'newspack_reader_activation_sender_email_address', 'sender@example.test' );
+		update_option( 'newspack_reader_activation_contact_email_address', 'contact@example.test' );
+
+		$response = Emails_Section::api_get_settings();
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+
+		$data = $response->get_data();
+		$this->assertSame( 'Test Sender', $data['sender_name'] );
+		$this->assertSame( 'sender@example.test', $data['sender_email_address'] );
+		$this->assertSame( 'contact@example.test', $data['contact_email_address'] );
+
+		// Defaults are derived from bloginfo / domain regardless of
+		// whether overrides are saved. Type-check rather than value-check
+		// since the bootstrap's site title / admin email vary.
+		$this->assertArrayHasKey( 'defaults', $data );
+		$this->assertIsString( $data['defaults']['sender_name'] );
+		$this->assertIsString( $data['defaults']['sender_email_address'] );
+		$this->assertStringStartsWith( 'no-reply@', $data['defaults']['sender_email_address'] );
+		$this->assertIsString( $data['defaults']['contact_email_address'] );
+
+		delete_option( 'newspack_reader_activation_sender_name' );
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
+	 * GET on a fresh install (no overrides saved) returns empty strings
+	 * for the three top-level keys and populated derived defaults. This
+	 * is the load-bearing case for the launch-safety story — publishers
+	 * who've never explicitly saved should see empty fields with
+	 * placeholder hints, not auto-derived values that could be locked
+	 * in on first save.
+	 */
+	public function test_get_settings_returns_empty_values_when_no_override_saved() {
+		// Belt-and-suspenders: no preceding update_option in this test,
+		// but make sure no leftover state from a sibling test bleeds in.
+		delete_option( 'newspack_reader_activation_sender_name' );
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+
+		$data = Emails_Section::api_get_settings()->get_data();
+
+		$this->assertSame( '', $data['sender_name'] );
+		$this->assertSame( '', $data['sender_email_address'] );
+		$this->assertSame( '', $data['contact_email_address'] );
+
+		// Defaults still populated even with no overrides.
+		$this->assertNotEmpty( $data['defaults']['sender_name'] );
+		$this->assertNotEmpty( $data['defaults']['sender_email_address'] );
+		$this->assertNotEmpty( $data['defaults']['contact_email_address'] );
+	}
+
+	/**
+	 * POST with valid non-empty values writes the three options and
+	 * returns the refreshed `{values + defaults}` shape via api_get_settings.
+	 */
+	public function test_post_settings_persists_three_fields() {
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', 'My Site' );
+		$request->set_param( 'sender_email_address', 'hello@example.test' );
+		$request->set_param( 'contact_email_address', 'support@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+
+		// Underlying wp_options keys are unchanged from the legacy surface.
+		$this->assertSame( 'My Site', get_option( 'newspack_reader_activation_sender_name' ) );
+		$this->assertSame( 'hello@example.test', get_option( 'newspack_reader_activation_sender_email_address' ) );
+		$this->assertSame( 'support@example.test', get_option( 'newspack_reader_activation_contact_email_address' ) );
+
+		// Response carries the refreshed value/default pair.
+		$data = $response->get_data();
+		$this->assertSame( 'My Site', $data['sender_name'] );
+		$this->assertSame( 'hello@example.test', $data['sender_email_address'] );
+		$this->assertSame( 'support@example.test', $data['contact_email_address'] );
+		$this->assertArrayHasKey( 'defaults', $data );
+
+		delete_option( 'newspack_reader_activation_sender_name' );
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
+	 * Invalid sender_email_address returns 400 + newspack_invalid_sender_email.
+	 * Mirrors what sanitize_email + is_email() do in production: "not-an-email"
+	 * fails is_email() at the handler's re-validation step.
+	 */
+	public function test_post_settings_rejects_invalid_email_in_sender() {
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', 'My Site' );
+		$request->set_param( 'sender_email_address', 'not-an-email' );
+		$request->set_param( 'contact_email_address', 'support@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+		$this->assertInstanceOf( WP_Error::class, $response );
+		$this->assertSame( 'newspack_invalid_sender_email', $response->get_error_code() );
+		$this->assertSame( 400, $response->get_error_data()['status'] );
+
+		// No options written on validation failure.
+		$this->assertFalse( get_option( 'newspack_reader_activation_sender_name' ) );
+	}
+
+	/**
+	 * Invalid contact_email_address returns 400 + newspack_invalid_contact_email.
+	 */
+	public function test_post_settings_rejects_invalid_email_in_contact() {
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', 'My Site' );
+		$request->set_param( 'sender_email_address', 'sender@example.test' );
+		$request->set_param( 'contact_email_address', 'also-not-an-email' );
+
+		$response = Emails_Section::api_update_settings( $request );
+		$this->assertInstanceOf( WP_Error::class, $response );
+		$this->assertSame( 'newspack_invalid_contact_email', $response->get_error_code() );
+		$this->assertSame( 400, $response->get_error_data()['status'] );
+	}
+
+	/**
+	 * POSTing an empty value for any field deletes the option row,
+	 * reverting that field to its derived default. This is the
+	 * load-bearing case for letting publishers "unset" a previously
+	 * saved override and re-engage the dynamic-default behavior.
+	 */
+	public function test_post_settings_empty_value_deletes_option() {
+		// Pre-condition: a saved override exists.
+		update_option( 'newspack_reader_activation_sender_name', 'Old Override' );
+		$this->assertSame( 'Old Override', get_option( 'newspack_reader_activation_sender_name' ) );
+
+		// POST with empty sender_name — other fields valid so the
+		// handler reaches the write path.
+		$request = new WP_REST_Request( 'POST' );
+		$request->set_param( 'sender_name', '' );
+		$request->set_param( 'sender_email_address', 'sender@example.test' );
+		$request->set_param( 'contact_email_address', 'contact@example.test' );
+
+		$response = Emails_Section::api_update_settings( $request );
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+
+		// Option row is gone — get_option returns the default `false`
+		// (no row exists), not the previously-saved 'Old Override'.
+		$this->assertFalse( get_option( 'newspack_reader_activation_sender_name' ) );
+
+		// Response carries '' for the cleared field and populated
+		// values for the others.
+		$data = $response->get_data();
+		$this->assertSame( '', $data['sender_name'] );
+		$this->assertSame( 'sender@example.test', $data['sender_email_address'] );
+		$this->assertSame( 'contact@example.test', $data['contact_email_address'] );
+
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+	}
+
+	/**
+	 * The settings endpoints inherit Wizard_Section's manage_options
+	 * default — a subscriber-level user hitting api_permissions_check()
+	 * gets WP_Error 403. Both GET and POST share the same permission
+	 * callback, so testing the section's permission method once covers
+	 * the gating for both methods.
+	 */
+	public function test_settings_endpoint_permission_check() {
+		$subscriber_id = $this->factory->user->create( [ 'role' => 'subscriber' ] );
+		$prev_user     = get_current_user_id();
+		wp_set_current_user( $subscriber_id );
+
+		$section = new Emails_Section();
+		$result  = $section->api_permissions_check();
+
+		$this->assertInstanceOf( WP_Error::class, $result, 'Subscriber should be denied.' );
+		$this->assertSame( 'newspack_rest_forbidden', $result->get_error_code() );
+		$this->assertSame( 403, $result->get_error_data()['status'] );
+
+		wp_set_current_user( $prev_user );
+		wp_delete_user( $subscriber_id );
+	}
 }
