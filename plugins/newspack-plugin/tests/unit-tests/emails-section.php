@@ -726,28 +726,46 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
-	 * GET response includes a `defaults` block. When network_home_url
-	 * cannot extract a host (rare, malformed siteurl), the
-	 * sender_email_address default must NOT be the broken `no-reply@`
-	 * string — the response should either be empty or carry a usable
-	 * fallback. Verified at the value level by stubbing the host
-	 * derivation via a filter is more involved than worth here; this
-	 * test instead asserts the happy-path positive: when a host is
-	 * present, the default starts with `no-reply@` AND has at least
-	 * one character after the `@`.
+	 * The `defaults.sender_email_address` returned by api_get_settings()
+	 * MUST match the value `Emails::get_from_email()` returns when no
+	 * override is saved. If they diverge, the modal's placeholder
+	 * shows one default while outbound mail is sent from another —
+	 * silent UX gap. Locks the contract: any future change to the
+	 * default-derivation logic on either side has to update both,
+	 * or this test fails.
 	 */
-	public function test_get_settings_default_sender_email_has_non_empty_host() {
+	public function test_get_settings_default_sender_email_matches_send_path() {
+		delete_option( 'newspack_reader_activation_sender_email_address' );
+
 		$data = Emails_Section::api_get_settings()->get_data();
-		$sender_default = $data['defaults']['sender_email_address'];
-		// Empty is the explicit revert/guard path; a non-empty default
-		// must always look like a real email (no bare `no-reply@`).
-		if ( '' !== $sender_default ) {
-			$this->assertMatchesRegularExpression(
-				'/^no-reply@.+$/',
-				$sender_default,
-				'sender_email default must carry a host after the @ symbol, or be empty when host derivation fails.'
-			);
-		}
+		$this->assertSame(
+			Emails::get_from_email(),
+			$data['defaults']['sender_email_address'],
+			'Modal placeholder must match Emails::get_from_email() default-fallback when no override saved.'
+		);
+	}
+
+	/**
+	 * Same alignment contract for sender_name (against
+	 * Emails::get_from_name()) and contact_email_address (against
+	 * Emails::get_reply_to_email()). Locks both surfaces against
+	 * silent divergence.
+	 */
+	public function test_get_settings_defaults_match_send_path_helpers() {
+		delete_option( 'newspack_reader_activation_sender_name' );
+		delete_option( 'newspack_reader_activation_contact_email_address' );
+
+		$data = Emails_Section::api_get_settings()->get_data();
+		$this->assertSame(
+			Emails::get_from_name(),
+			$data['defaults']['sender_name'],
+			'Modal placeholder must match Emails::get_from_name() default-fallback.'
+		);
+		$this->assertSame(
+			Emails::get_reply_to_email(),
+			$data['defaults']['contact_email_address'],
+			'Modal placeholder must match Emails::get_reply_to_email() default-fallback.'
+		);
 	}
 
 	/**

@@ -93,10 +93,18 @@ class Emails_Section extends Wizard_Section {
 
 		// GET — Read the three transactional-email setting values used
 		// by `Emails::get_from_name()`, `get_from_email()`, and
-		// `get_reply_to_email()`. Reads through
-		// `Reader_Activation::get_setting()` so the response carries the
-		// same defaults (blog name, no-reply address, admin email) that
-		// the email-send path sees when no override has been saved.
+		// `get_reply_to_email()`. INTENTIONALLY does NOT call
+		// `Reader_Activation::get_setting()`: that helper resolves to
+		// (saved OR derived), collapsing the two states the modal
+		// must keep separate. The handler returns raw `get_option`
+		// values at the top level (empty when no override is saved)
+		// and derived defaults under a `defaults` sub-array, so the
+		// frontend can render saved-override as `value=` and the
+		// dynamic default as `placeholder=`. Future refactors must
+		// preserve this split — calling `get_setting()` here would
+		// silently break the value-vs-placeholder contract and
+		// re-introduce the launch-safety bug where first-save locked
+		// derived defaults in as static option rows.
 		register_rest_route(
 			NEWSPACK_API_NAMESPACE,
 			self::REST_BASE . '/settings',
@@ -685,17 +693,22 @@ class Emails_Section extends Wizard_Section {
 	 * @return \WP_REST_Response
 	 */
 	public static function api_get_settings() {
+		// Mirror `Emails::get_from_email()`'s default-derivation
+		// EXACTLY, including the misconfigured-host fallback. If the
+		// modal's placeholder diverged from what the send path
+		// actually emits when no override is saved, publishers would
+		// see one default in the UI and get a different from-address
+		// on outbound mail — silent UX/expectations gap. On a site
+		// where `network_home_url()` can't yield a host, both this
+		// derived default AND `Emails::get_from_email()` resolve to
+		// the literal `'no-reply@'` (broken-looking but consistent).
+		// Worth a separate follow-up to fix the broken-host case at
+		// the send path; the alignment here just keeps the two
+		// surfaces honest.
 		$home_host = (string) wp_parse_url( network_home_url(), PHP_URL_HOST );
 		if ( 'www.' === substr( $home_host, 0, 4 ) ) {
 			$home_host = substr( $home_host, 4 );
 		}
-
-		// Guard the empty-host edge: when wp_parse_url can't extract a
-		// host (malformed siteurl, edge multisite configs), don't emit
-		// a visibly-broken `no-reply@` placeholder to the publisher.
-		// Empty default = the input renders without a hint, which is
-		// better UX than an obviously-truncated address.
-		$sender_email_default = '' === $home_host ? '' : 'no-reply@' . $home_host;
 
 		return rest_ensure_response(
 			[
@@ -704,7 +717,7 @@ class Emails_Section extends Wizard_Section {
 				'contact_email_address' => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'contact_email_address', '' ),
 				'defaults'              => [
 					'sender_name'           => get_bloginfo( 'name' ),
-					'sender_email_address'  => $sender_email_default,
+					'sender_email_address'  => 'no-reply@' . $home_host,
 					'contact_email_address' => get_bloginfo( 'admin_email' ),
 				],
 			]

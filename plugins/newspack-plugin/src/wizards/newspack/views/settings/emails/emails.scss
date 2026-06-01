@@ -123,13 +123,19 @@
 }
 
 // Trigger description sub-text under the title.
-// Two-line clamp keeps grid cards uniform while still showing enough context.
+//
+// Three-line clamp: the original two-line clamp truncated single-
+// sentence descriptions of normal length at 12px in the narrow grid
+// card width (e.g. card-expiry-warning, renewal-reminder). Three
+// lines fits sentence-length descriptions without forcing copy
+// reductions that hurt comprehension, while still bounding card
+// height enough to preserve grid uniformity.
 .newspack-emails__trigger-description {
 	color: wp-colors.$gray-900;
 	font-size: 12px;
 	margin-top: 4px;
 	display: -webkit-box;
-	-webkit-line-clamp: 2;
+	-webkit-line-clamp: 3;
 	-webkit-box-orient: vertical;
 	overflow: hidden;
 }

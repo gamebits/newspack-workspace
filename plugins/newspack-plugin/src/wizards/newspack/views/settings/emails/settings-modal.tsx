@@ -228,7 +228,7 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 					<TextControl
 						label={ __( 'Sender Email Address', 'newspack-plugin' ) }
 						help={ __(
-							'Email address to use as the sender of transactional emails. Leave blank to use no-reply@ your site domain.',
+							"Email address to use as the sender of transactional emails. Leave blank to use a no-reply address at your site's domain.",
 							'newspack-plugin'
 						) }
 						type="email"
