@@ -97,6 +97,17 @@ jest.mock( './email-preview', () => ( {
 	},
 } ) );
 
+// Stub the Settings modal — it pulls in @wordpress/data's useDispatch
+// against the wizards store, which isn't registered in this test env.
+// The grid tests don't exercise modal behavior; the modal has its own
+// test file. Render nothing here so emails.tsx mounts cleanly.
+jest.mock( './settings-modal', () => ( {
+	__esModule: true,
+	default: function MockSettingsModal() {
+		return null;
+	},
+} ) );
+
 // Fixtures span both chips and both sources so the chip-filter and
 // type-routing tests have meaningful data on either side of the toggle.
 const mockEmails = [

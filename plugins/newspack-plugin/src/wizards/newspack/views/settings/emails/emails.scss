@@ -13,13 +13,14 @@
 
 // Chip filter bar above the DataViews grid. Two-way toggle between
 // 'Reader revenue' and 'Authentication & account' — every email belongs
-// to exactly one chip group, so there's no "All" view.
+// to exactly one chip group, so there's no "All" view. The outer
+// HStack also hosts a Settings button on the right (NPPD-1566).
 //
 // Horizontal padding matches the 24px inner padding `@wordpress/dataviews`
 // applies to `.dataviews__view-actions`, so the chip bar's left edge
-// lines up with the search field and grid below. Without this the bar
-// reads as unmoored — sitting at the section padding edge while the
-// DataViews controls are inset another 24px.
+// lines up with the search field and grid below — and the right-side
+// Settings button lines up with the DataViews actions on the right.
+// Without this the bar reads as unmoored.
 //
 // Vertical: the Newspack DataViews wrapper applies `margin-top: -16px`
 // in full-width contexts (see packages/components/src/dataviews/style.scss).
@@ -31,11 +32,14 @@
 // top after the pull-up resolves (24 + -16 = 8). Visible gap to the
 // search row inside DataViews is 24px (8 + view-actions padding-top
 // of 16px).
+.newspack-emails__chip-bar {
+	margin-bottom: 24px;
+	padding: 0 24px;
+}
+
 .newspack-emails__chips {
 	display: flex;
 	gap: 8px;
-	margin-bottom: 24px;
-	padding: 0 24px;
 
 	// Nested for specificity over WP Button defaults — without the
 	// `.components-button` chain, the pill shape and padding lose to

@@ -9,7 +9,7 @@ import { __, sprintf } from '@wordpress/i18n';
 import { useState, useEffect, useCallback, useMemo, Fragment } from '@wordpress/element';
 import { filterSortAndPaginate } from '@wordpress/dataviews';
 import type { Action, Field, View } from '@wordpress/dataviews';
-import { Button } from '@wordpress/components';
+import { Button, __experimentalHStack as HStack } from '@wordpress/components'; // eslint-disable-line @wordpress/no-unsafe-wp-apis
 
 /**
  * Internal dependencies.
@@ -18,6 +18,7 @@ import { Badge, DataViews, Notice, utils } from '../../../../../../packages/comp
 import WizardsPluginCard from '../../../../wizards-plugin-card';
 import { useWizardApiFetch } from '../../../../hooks/use-wizard-api-fetch';
 import EmailPreview from './email-preview';
+import SettingsModal from './settings-modal';
 import './emails.scss';
 
 interface EmailItem {
@@ -94,6 +95,7 @@ const Emails = () => {
 	const postType = initial?.post_type ?? emailSections.emails.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
 	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
+	const [ showSettingsModal, setShowSettingsModal ] = useState( false );
 
 	const selectChip = ( chip: ChipValue ) => {
 		setActiveChip( chip );
@@ -407,26 +409,32 @@ const Emails = () => {
 		<Fragment>
 			<PageHeading />
 			{ errorMessage && <Notice isError noticeText={ errorMessage } /> }
-			<div className="newspack-emails__chips" role="group" aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }>
-				{ CHIPS.map( chip => {
-					// During an active search, neither chip is filtering —
-					// render both as unpressed so the visual matches reality.
-					// Clicking either chip clears the search via selectChip
-					// and engages that chip's view.
-					const isActive = ! isSearching && activeChip === chip.value;
-					return (
-						<Button
-							key={ chip.value }
-							variant={ isActive ? 'primary' : 'secondary' }
-							aria-pressed={ isActive }
-							onClick={ () => selectChip( chip.value ) }
-							className="newspack-emails__chip"
-						>
-							{ chip.label }
-						</Button>
-					);
-				} ) }
-			</div>
+			<HStack className="newspack-emails__chip-bar" justify="space-between" alignment="center">
+				<div className="newspack-emails__chips" role="group" aria-label={ __( 'Filter emails by group', 'newspack-plugin' ) }>
+					{ CHIPS.map( chip => {
+						// During an active search, neither chip is filtering —
+						// render both as unpressed so the visual matches reality.
+						// Clicking either chip clears the search via selectChip
+						// and engages that chip's view.
+						const isActive = ! isSearching && activeChip === chip.value;
+						return (
+							<Button
+								key={ chip.value }
+								variant={ isActive ? 'primary' : 'secondary' }
+								aria-pressed={ isActive }
+								onClick={ () => selectChip( chip.value ) }
+								className="newspack-emails__chip"
+							>
+								{ chip.label }
+							</Button>
+						);
+					} ) }
+				</div>
+				<Button variant="secondary" onClick={ () => setShowSettingsModal( true ) }>
+					{ __( 'Settings', 'newspack-plugin' ) }
+				</Button>
+			</HStack>
+			<SettingsModal showModal={ showSettingsModal } closeModal={ () => setShowSettingsModal( false ) } />
 			<DataViews
 				className="newspack-emails"
 				data={ processedData }
