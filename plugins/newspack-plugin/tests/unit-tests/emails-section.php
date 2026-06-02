@@ -1069,35 +1069,72 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	 *
 	 * NPPD-1538 migrated GET /emails and POST /emails/{id}/toggle to use
 	 * self::REST_BASE (slice 2a had registered them with $wizard_slug
-	 * directly). This test verifies via the registered route table that
-	 * no Emails endpoint leaked into the wizard_slug namespace
-	 * (`wizard/newspack-audience/emails*`). Catches the regression where
-	 * a contributor adds a new endpoint using the old pattern.
+	 * directly). This test verifies by constructing a fresh
+	 * `WP_REST_Server`, calling `register_rest_routes()` on a freshly-
+	 * instantiated `Emails_Section` (with a deliberately-mismatched
+	 * wizard_slug to surface any remaining `$wizard_slug` interpolation),
+	 * and inspecting the resulting route table. Both the listing endpoint
+	 * AND the toggle endpoint must register under `wizard/newspack-settings`
+	 * regardless of what `$wizard_slug` is set to — that's the invariant.
 	 *
-	 * Note: Audience_Wizard has an unrelated reset endpoint at
-	 * `wizard/newspack-audience/audience-management/emails/{id}` —
-	 * filtered out by the negative regex (requires `/emails` directly
-	 * after the wizard slug, not under `/audience-management/`).
+	 * Forces `newspack_woocommerce_active` to true so the toggle endpoint
+	 * (gated by `is_woocommerce_active()` in `register_rest_routes`) is
+	 * exercised — a regression that reintroduced `$wizard_slug` interpolation
+	 * on the toggle endpoint would otherwise slip through in WC-inactive
+	 * test environments.
+	 *
+	 * Uses the in-test route-registration pattern established at
+	 * `test_post_settings_args_use_text_field_sanitizer_for_emails` —
+	 * a fresh `WP_REST_Server` avoids depending on global REST state
+	 * and on whether `rest_api_init` fired with the section attached.
 	 */
 	public function test_no_wizard_slug_in_rest_route_registration() {
-		$server = rest_get_server();
-		$routes = array_keys( $server->get_routes() );
+		add_filter( 'newspack_woocommerce_active', '__return_true' );
 
-		// Positive: the pinned listing endpoint must be registered.
-		$this->assertContains(
+		// register_rest_route normally complains when called outside
+		// `rest_api_init`; we're calling register_rest_routes() directly
+		// to introspect what would be registered through the normal
+		// lifecycle. Acknowledge the notice rather than fire the whole
+		// action chain.
+		$this->setExpectedIncorrectUsage( 'register_rest_route' );
+
+		global $wp_rest_server;
+		$prev_server    = $wp_rest_server;
+		$wp_rest_server = new WP_REST_Server();
+		// Deliberately pass a different wizard_slug than the section's
+		// natural home. If any route registration still interpolates
+		// $this->wizard_slug, it would land under
+		// `wizard/regression-canary-slug/...` and the negative
+		// assertion below would fire.
+		( new Emails_Section( [ 'wizard_slug' => 'regression-canary-slug' ] ) )->register_rest_routes();
+		$routes         = $wp_rest_server->get_routes();
+		$wp_rest_server = $prev_server;
+
+		remove_filter( 'newspack_woocommerce_active', '__return_true' );
+
+		// Positive: both the listing endpoint AND the toggle endpoint
+		// (WC-active branch) must register under REST_BASE.
+		$this->assertArrayHasKey(
 			'/newspack/v1/wizard/newspack-settings/emails',
 			$routes,
 			'Pinned listing endpoint must be registered under REST_BASE.'
 		);
+		$toggle_pattern    = '#^/newspack/v1/wizard/newspack-settings/emails/\(\?P<id>#';
+		$matching_toggle   = array_filter(
+			array_keys( $routes ),
+			fn( $route ) => preg_match( $toggle_pattern, $route )
+		);
+		$this->assertNotEmpty(
+			$matching_toggle,
+			'Pinned toggle endpoint must be registered under REST_BASE when WC is active.'
+		);
 
-		// Negative: no Emails_Section route may live under the wizard's
-		// runtime slug (newspack-audience). The reset endpoint at
-		// /wizard/newspack-audience/audience-management/emails/... is
-		// owned by Audience_Wizard, not Emails_Section — the regex
-		// requires /emails directly after the wizard slug to flag it.
-		$leak_pattern = '#^/newspack/v1/wizard/newspack-audience/emails(/|$)#';
+		// Negative: no Emails_Section route may live under the
+		// canary slug — would only happen if a registration still
+		// interpolates $this->wizard_slug instead of self::REST_BASE.
+		$leak_pattern = '#^/newspack/v1/wizard/regression-canary-slug/#';
 		$leaks        = array_filter(
-			$routes,
+			array_keys( $routes ),
 			fn( $route ) => preg_match( $leak_pattern, $route )
 		);
 		$this->assertEmpty(

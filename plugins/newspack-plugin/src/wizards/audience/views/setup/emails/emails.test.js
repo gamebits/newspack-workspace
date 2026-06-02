@@ -226,7 +226,6 @@ describe( 'Emails', () => {
 					newspackNewsletters: true,
 				},
 				postType: 'newspack_rr_email',
-				isEmailEnhancementsActive: false,
 			},
 		};
 		mockWizardApiFetch.mockImplementation( ( opts, callbacks ) => {

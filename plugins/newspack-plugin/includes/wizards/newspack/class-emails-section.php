@@ -28,14 +28,17 @@ class Emails_Section extends Wizard_Section {
 	/**
 	 * Containing wizard slug.
 	 *
-	 * Default reflects the section's current home (Audience). Overridden at
-	 * construction time by `Wizard_Section::__construct` from the args
-	 * passed by `Wizard::load_wizard_sections`, so the default only matters
-	 * if the section is ever instantiated standalone.
+	 * Not initialized at the class level — `Wizard_Section::__construct`
+	 * unconditionally assigns `$this->wizard_slug = $args['wizard_slug'] ?? ''`,
+	 * which would clobber any default declared here. The registration site
+	 * in `Wizards::init_wizards()` (currently the Audience wizard, slug
+	 * `newspack-audience`) is the single source of truth. Standalone
+	 * instantiation with no args leaves this empty — by design, since
+	 * REST routes use the pinned REST_BASE and don't depend on this value.
 	 *
 	 * @var string
 	 */
-	protected $wizard_slug = 'newspack-audience';
+	protected $wizard_slug;
 
 	/**
 	 * REST base path for Emails endpoints.

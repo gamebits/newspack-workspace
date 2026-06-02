@@ -75,12 +75,12 @@ class Newspack_Settings extends Wizard {
 	 * a Settings > Emails page, cached 301s would block it.
 	 */
 	public static function maybe_redirect_legacy_emails_url() {
-		if ( wp_doing_ajax() || is_network_admin() ) {
-			return;
-		}
-		if ( ! current_user_can( 'manage_options' ) ) {
-			return;
-		}
+		// Fastest checks first — this fires on every admin_init across all
+		// of wp-admin, so cheap $_GET reads short-circuit before the
+		// capability + AJAX + network-admin guards. Custom-role plugins
+		// can make current_user_can() non-trivial (user_has_cap filter
+		// chains, per-request role mapping) and there's no reason to pay
+		// that on every Dashboard/Plugins/Posts pageload.
 		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- read-only check on admin URL params, no state change.
 		$page   = isset( $_GET['page'] ) ? sanitize_text_field( wp_unslash( $_GET['page'] ) ) : '';
 		$emails = isset( $_GET['emails'] ) ? sanitize_text_field( wp_unslash( $_GET['emails'] ) ) : '';
@@ -88,7 +88,26 @@ class Newspack_Settings extends Wizard {
 		if ( 'newspack-settings' !== $page || '1' !== $emails ) {
 			return;
 		}
-		wp_safe_redirect( admin_url( 'admin.php?page=newspack-audience#/emails' ) );
+		if ( wp_doing_ajax() || is_network_admin() ) {
+			return;
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		// Preserve any other query args on the incoming request
+		// (e.g. utm_source, highlight=...) so external deep-link
+		// generators can carry context across the redirect. The
+		// `page` and `emails` keys are dropped — page is replaced
+		// with the new home, `emails` was just the hint marker.
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- read-only superglobal access, no state change.
+		$extra_args = $_GET;
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+		unset( $extra_args['page'], $extra_args['emails'] );
+		$target = add_query_arg(
+			array_merge( [ 'page' => 'newspack-audience' ], array_map( 'sanitize_text_field', wp_unslash( $extra_args ) ) ),
+			admin_url( 'admin.php' )
+		) . '#/emails';
+		wp_safe_redirect( $target );
 		exit;
 	}
 

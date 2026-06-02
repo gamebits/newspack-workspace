@@ -26,8 +26,21 @@ import { lazy } from '@wordpress/element';
 // runs). We avoid depending on `newspack_urls.dashboard` here so this
 // redirect is robust against any localized-data timing edge case —
 // `window.location` is always populated at module-load.
-if ( window.location.hash === '#/emails' ) {
-	window.location.replace( `${ window.location.pathname }?page=newspack-audience#/emails` );
+// Match `#/emails`, `#/emails/`, `#/emails/preview/123`, `#/emails?ref=x`, etc.
+// Strict equality on `#/emails` would silently drop these variants and let the
+// Wizard's catch-all `<Redirect to={ displayedSections[ 0 ].path } />` (at
+// packages/components/src/wizard/index.js:262) bounce the user to Connections
+// instead of the new Audience > Emails home. The boundary character set
+// (`/` or `?`) prevents accidental matches on unrelated hashes like
+// `#/emails-archive` that just happen to start with the same prefix.
+const hash = window.location.hash;
+if ( hash === '#/emails' || hash.startsWith( '#/emails/' ) || hash.startsWith( '#/emails?' ) ) {
+	// Preserve any extra hash suffix (query / nested route) so a stale
+	// bookmark like `#/emails/preview/123` lands on the same suffix under
+	// Audience (where unsupported suffixes resolve to /#/emails via the
+	// Audience HashRouter's own catch-all).
+	const suffix = hash.slice( '#/emails'.length );
+	window.location.replace( `${ window.location.pathname }?page=newspack-audience#/emails${ suffix }` );
 }
 
 const settingsTabs = window.newspackSettings;

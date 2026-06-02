@@ -53,9 +53,11 @@
 }
 
 // DataViews search/filter/icon alignment.
-// The Settings emails section is registered with `fullWidth: true` in
-// sections.tsx, which adds `.newspack-wizard__content--full-width` to the
-// parent and disables the with-wizard-screen negative-margin breakout.
+// The Audience Emails route in src/wizards/audience/views/setup/index.js
+// passes `className="newspack-wizard__content--full-width"` to its
+// withWizardScreen-wrapped tab, which adds that class to the parent and
+// disables the with-wizard-screen negative-margin breakout that would
+// otherwise pull DataViews past the page edges.
 .newspack-emails-tab {
 	.dataviews__view-actions {
 		display: flex;

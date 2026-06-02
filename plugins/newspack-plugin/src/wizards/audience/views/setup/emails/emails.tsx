@@ -84,8 +84,14 @@ const CHIPS: { value: ChipValue; label: string }[] = [
 ];
 
 const Emails = () => {
-	const emailSettings = window.newspackAudience.emails;
-	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSettings.dependencies.newspackNewsletters ) );
+	// Defensive: fall back to an empty shape if the SSR-bootstrap payload
+	// is missing (e.g., a plugin filter strips the localized object, the
+	// component is mounted from a non-Audience surface, or a dev-time HMR
+	// reseed clears window state). Without this, accessing
+	// `.dependencies.newspackNewsletters` on undefined would throw
+	// TypeError at mount and crash the entire route.
+	const emailSettings = window.newspackAudience?.emails ?? { dependencies: {}, postType: '', initial: undefined };
+	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSettings.dependencies?.newspackNewsletters ) );
 
 	// Seed from the SSR bootstrap (class-audience-wizard.php passes the same
 	// shape as api_get_email_settings()) so DataViews renders on first paint

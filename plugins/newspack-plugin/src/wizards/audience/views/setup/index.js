@@ -16,18 +16,11 @@ import { useEffect, useState, forwardRef } from '@wordpress/element';
 import Setup from './setup';
 import Campaign from './campaign';
 import Complete from './complete';
-import { withWizard, withWizardScreen } from '../../../../../packages/components/src';
+import { withWizard } from '../../../../../packages/components/src';
 import Router from '../../../../../packages/components/src/proxied-imports/router';
 import ContentGating from './content-gating';
 import Payment from './payment';
 import Emails from './emails';
-
-// The unified Emails tab uses DataViews and wants the wide layout. Passing
-// `className="newspack-wizard__content--full-width"` to `withWizardScreen`
-// (a) zeroes the parent's horizontal padding and (b) disables the negative-
-// margin breakout in with-wizard-screen.scss that would otherwise pull
-// `.newspack-dataviews` 48px past our edges.
-const EmailsTab = withWizardScreen( () => <Emails /> );
 
 const { HashRouter, Redirect, Route, Switch } = Router;
 
@@ -170,7 +163,7 @@ function AudienceWizard( { confirmAction, pluginRequirements, wizardApiFetch }, 
 					<Route path="/" exact render={ () => <Setup { ...props } /> } />
 					<Route path="/content-gating" render={ () => <ContentGating { ...props } /> } />
 					<Route path="/payment" render={ () => <Payment { ...props } /> } />
-					<Route path="/emails" render={ () => <EmailsTab { ...props } className="newspack-wizard__content--full-width" /> } />
+					<Route path="/emails" render={ () => <Emails { ...props } className="newspack-wizard__content--full-width" /> } />
 					<Route path="/campaign" render={ () => <Campaign { ...props } /> } />
 					<Route path="/complete" render={ () => <Complete { ...props } /> } />
 					<Redirect to="/" />
