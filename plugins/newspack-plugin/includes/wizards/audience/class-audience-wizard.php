@@ -52,9 +52,16 @@ class Audience_Wizard extends Wizard {
 
 	/**
 	 * Audience Configuration Constructor.
+	 *
+	 * @param array $args Optional. Wizard arguments — forwarded to the
+	 *                    parent so `sections` can be loaded via
+	 *                    `Wizard::load_wizard_sections()`. Used by the
+	 *                    Emails section, which hosts under Audience now
+	 *                    (NPPD-1538) but keeps its REST_BASE pinned to
+	 *                    `newspack-settings` for API stability.
 	 */
-	public function __construct() {
-		parent::__construct();
+	public function __construct( $args = [] ) {
+		parent::__construct( $args );
 		add_action( 'rest_api_init', [ $this, 'register_api_endpoints' ] );
 
 		// Determine active menu items.
@@ -112,6 +119,17 @@ class Audience_Wizard extends Wizard {
 		$data['content_gifting'] = [
 			'can_use_gifting' => Content_Gifting::can_use_gifting( true ),
 			'has_metering'    => Content_Gate::is_metering_enabled( Memberships::GATE_CPT ),
+		];
+
+		// SSR-bootstrap the emails tab so DataViews renders on first paint
+		// instead of waiting for the mount-time XHR. Same shape as the API
+		// response so the React seed and the post-fetch state line up.
+		$data['emails'] = [
+			'dependencies' => [
+				'newspackNewsletters' => is_plugin_active( 'newspack-newsletters/newspack-newsletters.php' ),
+			],
+			'postType'     => Emails::POST_TYPE,
+			'initial'      => \Newspack\Wizards\Newspack\Emails_Section::api_get_email_settings(),
 		];
 
 		wp_enqueue_script( 'newspack-wizards' );

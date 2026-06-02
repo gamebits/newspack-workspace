@@ -211,15 +211,11 @@ describe( 'SettingsModal', () => {
 		// Window globals emails.tsx reads at mount. Empty newspack_emails
 		// is still truthy, so the grid's mount-time fetch is skipped —
 		// only the modal will fire a fetch when opened.
-		window.newspackSettings = {
+		window.newspackAudience = {
 			emails: {
-				sections: {
-					emails: {
-						dependencies: { newspackNewsletters: true },
-						initial: { newspack_emails: [], post_type: 'newspack_em' },
-						postType: 'newspack_em',
-					},
-				},
+				dependencies: { newspackNewsletters: true },
+				initial: { newspack_emails: [], post_type: 'newspack_em' },
+				postType: 'newspack_em',
 			},
 		};
 	} );

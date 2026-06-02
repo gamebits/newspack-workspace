@@ -7,7 +7,6 @@
 
 namespace Newspack\Wizards\Newspack;
 
-use Newspack\Emails;
 use Newspack\OAuth;
 use Newspack\Wizard;
 use Newspack\Everlit_Configuration_Manager;
@@ -75,21 +74,6 @@ class Newspack_Settings extends Wizard {
 						'measurement_protocol_secret' => get_option( 'ga4_measurement_protocol_secret', '' ),
 					],
 					'customEvents' => $this->sections['custom-events']->get_data(),
-				],
-			],
-			'emails'            => [
-				'label'    => __( 'Emails', 'newspack-plugin' ),
-				'sections' => [
-					'emails' => [
-						'dependencies' => [
-							'newspackNewsletters' => is_plugin_active( 'newspack-newsletters/newspack-newsletters.php' ),
-						],
-						'postType'     => Emails::POST_TYPE,
-						// SSR-bootstrap the email list so DataViews renders
-						// on first paint rather than after the mount XHR.
-						// Same shape as api_get_email_settings()'s response.
-						'initial'      => \Newspack\Wizards\Newspack\Emails_Section::api_get_email_settings(),
-					],
 				],
 			],
 			'social'            => [

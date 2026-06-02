@@ -19,24 +19,30 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Emails Section Class.
  *
- * Surfaces the unified emails management UI in the Newspack > Settings >
- * Emails wizard tab. Backed by the unified `newspack_email_configs`
- * schema — no parallel registry.
+ * Surfaces the unified emails management UI as a tab inside Audience >
+ * Configuration. Backed by the unified `newspack_email_configs` schema —
+ * no parallel registry. REST routes stay pinned to the `newspack-settings`
+ * REST_BASE for API stability across the UI move.
  */
 class Emails_Section extends Wizard_Section {
 	/**
 	 * Containing wizard slug.
 	 *
+	 * Default reflects the section's current home (Audience). Overridden at
+	 * construction time by `Wizard_Section::__construct` from the args
+	 * passed by `Wizard::load_wizard_sections`, so the default only matters
+	 * if the section is ever instantiated standalone.
+	 *
 	 * @var string
 	 */
-	protected $wizard_slug = 'newspack-settings';
+	protected $wizard_slug = 'newspack-audience';
 
 	/**
 	 * REST base path for Emails endpoints.
 	 *
-	 * Hardcoded to 'newspack-settings' for API stability. When NPPD-1538
-	 * later moves the Emails screen from Newspack > Settings to Audience >
-	 * Configuration, this REST path MUST stay at 'newspack-settings' —
+	 * Hardcoded to 'newspack-settings' for API stability. The Emails UI
+	 * moved from Newspack > Settings to Audience > Configuration in
+	 * NPPD-1538, but this REST path stays at 'newspack-settings' —
 	 * external callers and the frontend depend on it. Do NOT change.
 	 */
 	const REST_BASE = 'wizard/newspack-settings/emails';
@@ -81,9 +87,15 @@ class Emails_Section extends Wizard_Section {
 	 * Register the endpoints needed for the wizard screens.
 	 */
 	public function register_rest_routes() {
+		// All routes use self::REST_BASE (pinned to 'wizard/newspack-settings/emails')
+		// rather than interpolating $this->wizard_slug. This decouples the REST
+		// surface from the wizard's mount point: when NPPD-1538 moves the Emails
+		// UI from Newspack > Settings to Audience > Configuration, $wizard_slug
+		// flips but the REST paths stay put — the frontend's hardcoded URLs and
+		// any external callers keep working.
 		register_rest_route(
 			NEWSPACK_API_NAMESPACE,
-			'wizard/' . $this->wizard_slug . '/emails',
+			self::REST_BASE,
 			[
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => [ __CLASS__, 'api_get_email_settings' ],
@@ -165,7 +177,7 @@ class Emails_Section extends Wizard_Section {
 		if ( self::is_woocommerce_active() ) {
 			register_rest_route(
 				NEWSPACK_API_NAMESPACE,
-				'wizard/' . $this->wizard_slug . '/emails/(?P<id>[A-Za-z0-9_]+)/toggle',
+				self::REST_BASE . '/(?P<id>[A-Za-z0-9_]+)/toggle',
 				[
 					'methods'             => WP_REST_Server::EDITABLE,
 					'callback'            => [ __CLASS__, 'api_toggle_wc_email' ],

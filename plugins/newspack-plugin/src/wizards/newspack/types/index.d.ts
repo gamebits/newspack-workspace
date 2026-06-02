@@ -70,18 +70,6 @@ declare global {
 			syndication: WizardTab;
 			'theme-and-brand': WizardTab;
 			seo: WizardTab;
-			emails: WizardTab & {
-				sections: {
-					emails: {
-						dependencies: Record< string, boolean >;
-						postType: string;
-						initial?: {
-							newspack_emails: Record< string, unknown >[];
-							post_type: string;
-						};
-					};
-				};
-			};
 			print: WizardTab;
 			'additional-brands': WizardTab & {
 				sections: {

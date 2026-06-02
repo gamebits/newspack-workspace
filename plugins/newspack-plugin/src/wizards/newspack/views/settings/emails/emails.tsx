@@ -84,15 +84,15 @@ const CHIPS: { value: ChipValue; label: string }[] = [
 ];
 
 const Emails = () => {
-	const emailSections = window.newspackSettings.emails.sections;
-	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSections.emails.dependencies.newspackNewsletters ) );
+	const emailSettings = window.newspackAudience.emails;
+	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSettings.dependencies.newspackNewsletters ) );
 
-	// Seed from the SSR bootstrap (class-newspack-settings.php passes the same
+	// Seed from the SSR bootstrap (class-audience-wizard.php passes the same
 	// shape as api_get_email_settings()) so DataViews renders on first paint
 	// instead of waiting for the mount-time XHR.
-	const initial = emailSections.emails.initial;
+	const initial = emailSettings.initial;
 	const [ data, setData ] = useState< EmailItem[] >( ( initial?.newspack_emails as EmailItem[] | undefined ) ?? [] );
-	const postType = initial?.post_type ?? emailSections.emails.postType;
+	const postType = initial?.post_type ?? emailSettings.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
 	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
 	const [ showSettingsModal, setShowSettingsModal ] = useState( false );

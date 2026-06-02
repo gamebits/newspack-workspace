@@ -220,17 +220,13 @@ describe( 'Emails', () => {
 		mockCapturedView = null;
 		mockCapturedOnChangeView = null;
 		mockCapturedData = [];
-		window.newspackSettings = {
+		window.newspackAudience = {
 			emails: {
-				sections: {
-					emails: {
-						dependencies: {
-							newspackNewsletters: true,
-						},
-						postType: 'newspack_rr_email',
-						isEmailEnhancementsActive: false,
-					},
+				dependencies: {
+					newspackNewsletters: true,
 				},
+				postType: 'newspack_rr_email',
+				isEmailEnhancementsActive: false,
 			},
 		};
 		mockWizardApiFetch.mockImplementation( ( opts, callbacks ) => {
