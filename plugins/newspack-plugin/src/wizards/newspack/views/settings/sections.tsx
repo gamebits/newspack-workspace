@@ -7,12 +7,18 @@ import { __ } from '@wordpress/i18n';
 import { lazy } from '@wordpress/element';
 
 // NPPD-1538: forward stale bookmarks of `?page=newspack-settings#/emails`
-// to the new Audience > Configuration > Emails home. Runs at module
-// load — before <Wizard> mounts and before the HashRouter parses the
-// hash — so the user never sees a Settings-page flash. `location.replace`
-// (vs `assign`) keeps the back button working: the old URL doesn't enter
-// browser history. The server-side handler in class-newspack-settings.php
-// catches the inverse case (explicit `?emails=1` query param, no hash).
+// to the new Audience > Configuration > Emails home. This is an
+// intentional module-load side-effect — normally a code smell, but
+// justified here because the side effect is "leave the page entirely
+// before React mounts." Doing this inside a useEffect would render a
+// Settings-page frame first, then unmount and navigate, producing a
+// visible flash. The hash-check + replace must run at module top, before
+// <Wizard> mounts and before the HashRouter parses the hash.
+//
+// `location.replace` (not `assign`) keeps the back button working: the
+// old URL never enters browser history. The server-side handler in
+// `class-newspack-settings.php` catches the inverse case (explicit
+// `?emails=1` query param, no hash).
 //
 // The destination URL is derived from `newspack_urls.dashboard` (which the
 // Wizard base class localizes via `newspack_data`) so the redirect respects

@@ -13,7 +13,9 @@
 use Newspack\Emails;
 use Newspack\Reader_Activation_Emails;
 use Newspack\Reader_Revenue_Emails;
+use Newspack\Wizards;
 use Newspack\Wizards\Newspack\Emails_Section;
+use Newspack\Wizards\Newspack\Newspack_Settings;
 
 /**
  * Tests the unified Emails config schema and the wizard response builder.
@@ -1002,5 +1004,187 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 
 		wp_set_current_user( $prev_user );
 		wp_delete_user( $subscriber_id );
+	}
+
+	/*
+	 * ------------------------------------------------------------------
+	 * Bucket G — Architectural lock-in (NPPD-1538)
+	 * ------------------------------------------------------------------
+	 * Pins the post-move invariants: Emails_Section now lives under
+	 * Audience but its REST surface stays under newspack-settings.
+	 * These tests fail loudly if a future contributor accidentally
+	 * unmoves the section, drifts the REST_BASE constant, or adds a
+	 * new endpoint that interpolates $wizard_slug instead of REST_BASE.
+	 * They also cover the legacy-URL redirect both directions
+	 * (with hint → fires, without hint → passes through).
+	 */
+
+	/**
+	 * Emails_Section's wizard_slug is 'newspack-audience' at runtime.
+	 *
+	 * The default property value in the class file is 'newspack-audience'
+	 * too, but Wizard_Section::__construct overrides it from the args
+	 * passed by Wizard::load_wizard_sections — so the assertion below
+	 * checks the actually-registered instance, not just the default.
+	 * A regression where Emails_Section is re-registered under
+	 * Newspack_Settings would set wizard_slug to 'newspack-settings'
+	 * and this test would catch it.
+	 */
+	public function test_emails_section_wizard_slug_is_audience() {
+		$audience_wizard = Wizards::get_wizard( 'audience' );
+		$this->assertNotFalse( $audience_wizard, 'Audience wizard must be registered.' );
+
+		$reflection      = new ReflectionClass( $audience_wizard );
+		$sections_prop   = $reflection->getProperty( 'sections' );
+		$sections_prop->setAccessible( true );
+		$sections = $sections_prop->getValue( $audience_wizard );
+
+		$this->assertArrayHasKey( 'emails', $sections, 'Audience wizard must host the emails section.' );
+		$emails_section = $sections['emails'];
+		$this->assertInstanceOf( Emails_Section::class, $emails_section );
+
+		$wizard_slug_prop = ( new ReflectionClass( $emails_section ) )->getProperty( 'wizard_slug' );
+		$wizard_slug_prop->setAccessible( true );
+		$this->assertSame(
+			'newspack-audience',
+			$wizard_slug_prop->getValue( $emails_section ),
+			'Emails_Section must register under Audience after NPPD-1538.'
+		);
+	}
+
+	/**
+	 * REST_BASE is hardcoded to 'wizard/newspack-settings/emails'.
+	 *
+	 * The class docblock says "Do NOT change" — this test locks the
+	 * invariant. If anyone flips REST_BASE to follow the wizard's new
+	 * home, every external caller and the frontend's hardcoded API
+	 * paths would break.
+	 */
+	public function test_rest_base_is_pinned_to_newspack_settings() {
+		$this->assertSame( 'wizard/newspack-settings/emails', Emails_Section::REST_BASE );
+	}
+
+	/**
+	 * No Emails_Section REST route interpolates $wizard_slug.
+	 *
+	 * NPPD-1538 migrated GET /emails and POST /emails/{id}/toggle to use
+	 * self::REST_BASE (slice 2a had registered them with $wizard_slug
+	 * directly). This test verifies via the registered route table that
+	 * no Emails endpoint leaked into the wizard_slug namespace
+	 * (`wizard/newspack-audience/emails*`). Catches the regression where
+	 * a contributor adds a new endpoint using the old pattern.
+	 *
+	 * Note: Audience_Wizard has an unrelated reset endpoint at
+	 * `wizard/newspack-audience/audience-management/emails/{id}` —
+	 * filtered out by the negative regex (requires `/emails` directly
+	 * after the wizard slug, not under `/audience-management/`).
+	 */
+	public function test_no_wizard_slug_in_rest_route_registration() {
+		$server = rest_get_server();
+		$routes = array_keys( $server->get_routes() );
+
+		// Positive: the pinned listing endpoint must be registered.
+		$this->assertContains(
+			'/newspack/v1/wizard/newspack-settings/emails',
+			$routes,
+			'Pinned listing endpoint must be registered under REST_BASE.'
+		);
+
+		// Negative: no Emails_Section route may live under the wizard's
+		// runtime slug (newspack-audience). The reset endpoint at
+		// /wizard/newspack-audience/audience-management/emails/... is
+		// owned by Audience_Wizard, not Emails_Section — the regex
+		// requires /emails directly after the wizard slug to flag it.
+		$leak_pattern = '#^/newspack/v1/wizard/newspack-audience/emails(/|$)#';
+		$leaks        = array_filter(
+			$routes,
+			fn( $route ) => preg_match( $leak_pattern, $route )
+		);
+		$this->assertEmpty(
+			$leaks,
+			'Emails_Section endpoints must not register under the wizard_slug namespace. Leaked routes: ' . implode( ', ', $leaks )
+		);
+	}
+
+	/**
+	 * Server-side legacy-URL redirect fires when ?emails=1 hint is present.
+	 *
+	 * Simulates a request to admin.php?page=newspack-settings&emails=1
+	 * by setting $_GET and calling the handler directly. The wp_redirect
+	 * filter captures the URL and throws to escape before the exit;
+	 * pattern matches existing redirect tests in
+	 * tests/unit-tests/content-gate/group-subscriptions.php.
+	 */
+	public function test_legacy_emails_url_redirects_with_hint() {
+		$admin_id = $this->factory->user->create( [ 'role' => 'administrator' ] );
+		$prev_user = get_current_user_id();
+		wp_set_current_user( $admin_id );
+
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- simulating an admin URL load in test setup.
+		$prev_get       = $_GET;
+		$_GET['page']   = 'newspack-settings';
+		$_GET['emails'] = '1';
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		$captured = null;
+		$capture  = function ( $location ) use ( &$captured ) {
+			$captured = $location;
+			throw new \RuntimeException( 'redirect_intercepted' );
+		};
+		add_filter( 'wp_redirect', $capture, 1 );
+
+		try {
+			try {
+				Newspack_Settings::maybe_redirect_legacy_emails_url();
+				$this->fail( 'Expected redirect to fire.' );
+			} catch ( \RuntimeException $e ) {
+				$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+			}
+
+			$this->assertNotNull( $captured, 'Redirect URL should have been captured.' );
+			$this->assertStringContainsString( 'page=newspack-audience', $captured );
+			$this->assertStringContainsString( '#/emails', $captured );
+		} finally {
+			remove_filter( 'wp_redirect', $capture, 1 );
+			$_GET = $prev_get;
+			wp_set_current_user( $prev_user );
+			wp_delete_user( $admin_id );
+		}
+	}
+
+	/**
+	 * Server-side legacy-URL redirect does NOT fire without the hint.
+	 *
+	 * Bare ?page=newspack-settings (no ?emails=1) must pass through
+	 * untouched — the Settings page itself still hosts other sections.
+	 * The wp_redirect filter is hooked to fail the test if it fires.
+	 */
+	public function test_legacy_emails_url_no_redirect_without_hint() {
+		$admin_id = $this->factory->user->create( [ 'role' => 'administrator' ] );
+		$prev_user = get_current_user_id();
+		wp_set_current_user( $admin_id );
+
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- simulating an admin URL load in test setup.
+		$prev_get     = $_GET;
+		$_GET['page'] = 'newspack-settings';
+		unset( $_GET['emails'] );
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		$fired = false;
+		$trip  = function ( $location ) use ( &$fired ) {
+			$fired = true;
+			return $location;
+		};
+		add_filter( 'wp_redirect', $trip, 1 );
+
+		try {
+			Newspack_Settings::maybe_redirect_legacy_emails_url();
+			$this->assertFalse( $fired, 'Bare ?page=newspack-settings must not redirect.' );
+		} finally {
+			remove_filter( 'wp_redirect', $trip, 1 );
+			$_GET = $prev_get;
+			wp_set_current_user( $prev_user );
+			wp_delete_user( $admin_id );
+		}
 	}
 }

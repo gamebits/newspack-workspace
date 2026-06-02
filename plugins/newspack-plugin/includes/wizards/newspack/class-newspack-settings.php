@@ -60,6 +60,15 @@ class Newspack_Settings extends Wizard {
 	 * is handled client-side in `sections.tsx` because the server
 	 * never sees the URL fragment.
 	 *
+	 * Note: no caller inside this codebase currently generates
+	 * `?emails=1` URLs. The handler is here as a forward-compatible
+	 * deep-link entry point for external integrations (admin emails,
+	 * help-center docs, third-party plugin links) that want to point
+	 * at the new home via query string without depending on JS
+	 * execution. The JS-side redirect in `sections.tsx` covers the
+	 * common case (hash-based bookmarks); this is the complementary
+	 * server path.
+	 *
 	 * Uses `wp_safe_redirect()` (default 302) to match the pattern
 	 * in `Newspack::admin_redirects()`. 302 over 301 so browsers
 	 * don't cache the redirect — if a future feature re-introduces
