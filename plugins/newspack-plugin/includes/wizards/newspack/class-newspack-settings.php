@@ -36,6 +36,54 @@ class Newspack_Settings extends Wizard {
 	protected $capability = 'manage_options';
 
 	/**
+	 * Constructor — extends Wizard's setup with an admin_init hook for
+	 * the legacy-Emails-URL redirect (NPPD-1538). The Emails screen
+	 * moved out of Settings into Audience > Configuration; this hook
+	 * forwards explicit `?emails=1` redirect hints to the new home.
+	 *
+	 * @param array $args Wizard arguments — forwarded to the parent.
+	 */
+	public function __construct( $args = [] ) {
+		parent::__construct( $args );
+		add_action( 'admin_init', [ __CLASS__, 'maybe_redirect_legacy_emails_url' ] );
+	}
+
+	/**
+	 * Redirect legacy `?page=newspack-settings&emails=1` URLs to the new
+	 * Audience > Configuration > Emails home (NPPD-1538).
+	 *
+	 * The `?emails=1` query string is the explicit opt-in marker: it
+	 * tells the server "this request was heading for Emails, not for
+	 * Settings root." Bare `?page=newspack-settings` (no marker) is
+	 * left alone — the Settings page still exists and hosts other
+	 * sections. The hash-only case (`?page=newspack-settings#/emails`)
+	 * is handled client-side in `sections.tsx` because the server
+	 * never sees the URL fragment.
+	 *
+	 * Uses `wp_safe_redirect()` (default 302) to match the pattern
+	 * in `Newspack::admin_redirects()`. 302 over 301 so browsers
+	 * don't cache the redirect — if a future feature re-introduces
+	 * a Settings > Emails page, cached 301s would block it.
+	 */
+	public static function maybe_redirect_legacy_emails_url() {
+		if ( wp_doing_ajax() || is_network_admin() ) {
+			return;
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- read-only check on admin URL params, no state change.
+		$page   = isset( $_GET['page'] ) ? sanitize_text_field( wp_unslash( $_GET['page'] ) ) : '';
+		$emails = isset( $_GET['emails'] ) ? sanitize_text_field( wp_unslash( $_GET['emails'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+		if ( 'newspack-settings' !== $page || '1' !== $emails ) {
+			return;
+		}
+		wp_safe_redirect( admin_url( 'admin.php?page=newspack-audience#/emails' ) );
+		exit;
+	}
+
+	/**
 	 * Get Settings local data
 	 *
 	 * @return []

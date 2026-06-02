@@ -6,6 +6,22 @@
 import { __ } from '@wordpress/i18n';
 import { lazy } from '@wordpress/element';
 
+// NPPD-1538: forward stale bookmarks of `?page=newspack-settings#/emails`
+// to the new Audience > Configuration > Emails home. Runs at module
+// load — before <Wizard> mounts and before the HashRouter parses the
+// hash — so the user never sees a Settings-page flash. `location.replace`
+// (vs `assign`) keeps the back button working: the old URL doesn't enter
+// browser history. The server-side handler in class-newspack-settings.php
+// catches the inverse case (explicit `?emails=1` query param, no hash).
+//
+// The destination URL is derived from `newspack_urls.dashboard` (which the
+// Wizard base class localizes via `newspack_data`) so the redirect respects
+// subdirectory WordPress installs.
+if ( window.location.hash === '#/emails' && window.newspack_urls?.dashboard ) {
+	const audienceUrl = window.newspack_urls.dashboard.replace( 'newspack-dashboard', 'newspack-audience' );
+	window.location.replace( `${ audienceUrl }#/emails` );
+}
+
 const settingsTabs = window.newspackSettings;
 
 import Seo from './seo';
