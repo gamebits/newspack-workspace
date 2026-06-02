@@ -20,7 +20,7 @@ import { withWizard, withWizardScreen } from '../../../../../packages/components
 import Router from '../../../../../packages/components/src/proxied-imports/router';
 import ContentGating from './content-gating';
 import Payment from './payment';
-import Emails from '../../../newspack/views/settings/emails';
+import Emails from './emails';
 
 // The unified Emails tab uses DataViews and wants the wide layout. Passing
 // `className="newspack-wizard__content--full-width"` to `withWizardScreen`
