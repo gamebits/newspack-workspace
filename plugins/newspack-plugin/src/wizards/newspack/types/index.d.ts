@@ -94,7 +94,6 @@ declare global {
 		};
 		newspack_urls: {
 			site: string;
-			dashboard: string;
 		};
 	}
 }

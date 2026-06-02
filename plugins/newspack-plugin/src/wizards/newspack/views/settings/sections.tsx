@@ -20,12 +20,14 @@ import { lazy } from '@wordpress/element';
 // `class-newspack-settings.php` catches the inverse case (explicit
 // `?emails=1` query param, no hash).
 //
-// The destination URL is derived from `newspack_urls.dashboard` (which the
-// Wizard base class localizes via `newspack_data`) so the redirect respects
-// subdirectory WordPress installs.
-if ( window.location.hash === '#/emails' && window.newspack_urls?.dashboard ) {
-	const audienceUrl = window.newspack_urls.dashboard.replace( 'newspack-dashboard', 'newspack-audience' );
-	window.location.replace( `${ audienceUrl }#/emails` );
+// The destination URL is built from `window.location.pathname` (which is
+// always `/wp-admin/admin.php`, or its equivalent on subdirectory WP
+// installs, since the user is already inside wp-admin when this code
+// runs). We avoid depending on `newspack_urls.dashboard` here so this
+// redirect is robust against any localized-data timing edge case —
+// `window.location` is always populated at module-load.
+if ( window.location.hash === '#/emails' ) {
+	window.location.replace( `${ window.location.pathname }?page=newspack-audience#/emails` );
 }
 
 const settingsTabs = window.newspackSettings;
