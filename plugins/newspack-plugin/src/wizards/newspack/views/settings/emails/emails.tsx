@@ -380,6 +380,22 @@ const Emails = () => {
 		[ visibleData, view, fields ]
 	);
 
+	// The `preview` media field belongs to the grid view (each card
+	// renders the iframe as its top tile). DataViews v14 also renders
+	// the media field as a leading thumbnail in table view, where the
+	// EmailPreview iframe is too constrained to actually show
+	// content — leaving an empty rounded square next to every row.
+	// Strip `mediaField` from the view passed to DataViews when
+	// the user has switched to table layout; the underlying state
+	// keeps the value so toggling back to grid restores the tile.
+	const effectiveView = useMemo< View >( () => {
+		if ( 'table' === view.type ) {
+			const { mediaField: _stripped, ...rest } = view;
+			return rest as View;
+		}
+		return view;
+	}, [ view ] );
+
 	if ( false === pluginsReady ) {
 		return (
 			<Fragment>
@@ -445,7 +461,7 @@ const Emails = () => {
 				className="newspack-emails"
 				data={ processedData }
 				fields={ fields }
-				view={ view }
+				view={ effectiveView }
 				onChangeView={ setView }
 				actions={ actions }
 				paginationInfo={ paginationInfo }
