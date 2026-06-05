@@ -470,6 +470,74 @@ describe( 'Emails', () => {
 		);
 	} );
 
+	it( 'toggleWcEmail onSuccess replaces local state with the authoritative server response', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		// Deactivate the enabled WC row (New order). The toggle mock resolves
+		// without invoking callbacks, so we drive onSuccess by hand below.
+		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
+		act( () => {
+			deactivate.callback( [ mockEmails[ 5 ] ] );
+		} );
+
+		const toggleCall = mockWizardApiFetch.mock.calls.find( ( [ opts ] ) => opts.path?.includes( '/toggle' ) );
+		expect( toggleCall ).toBeDefined();
+		const { onSuccess } = toggleCall[ 1 ];
+
+		// Server returns an authoritative payload that differs from anything
+		// the client could predict (a sibling row's label changed). onSuccess
+		// must replace local state with it wholesale.
+		const serverEmails = mockEmails.map( email =>
+			email.post_id === 1 ? { ...email, label: 'Payment receipt (server-authoritative)' } : email
+		);
+		act( () => {
+			onSuccess( { newspack_emails: serverEmails, post_type: 'newspack_rr_email' } );
+		} );
+
+		await waitFor( () => {
+			expect( screen.getByText( 'Payment receipt (server-authoritative)' ) ).toBeInTheDocument();
+		} );
+	} );
+
+	it( 'toggleWcEmail onError rolls back the optimistic status change', async () => {
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		// New order starts enabled (publish).
+		const before = mockCapturedData.find( item => item.post_id === 'wc:new_order' );
+		expect( before.status ).toBe( 'publish' );
+
+		const deactivate = mockCapturedActions.find( a => a.id === 'deactivate' );
+		act( () => {
+			deactivate.callback( [ mockEmails[ 5 ] ] );
+		} );
+
+		// Optimistic update flipped it to draft before the request settled.
+		await waitFor( () => {
+			expect( mockCapturedData.find( item => item.post_id === 'wc:new_order' ).status ).toBe( 'draft' );
+		} );
+
+		// Drive the failure path — onError restores the pre-toggle snapshot.
+		const toggleCall = mockWizardApiFetch.mock.calls.find( ( [ opts ] ) => opts.path?.includes( '/toggle' ) );
+		const { onError } = toggleCall[ 1 ];
+		act( () => {
+			onError();
+		} );
+
+		await waitFor( () => {
+			expect( mockCapturedData.find( item => item.post_id === 'wc:new_order' ).status ).toBe( 'publish' );
+		} );
+	} );
+
 	it( 'chip filter shows only rows matching activeChip', async () => {
 		const Emails = require( './emails' ).default;
 		render( <Emails /> );
