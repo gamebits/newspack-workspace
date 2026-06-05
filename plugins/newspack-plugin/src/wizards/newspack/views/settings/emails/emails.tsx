@@ -396,6 +396,23 @@ const Emails = () => {
 		return view;
 	}, [ view ] );
 
+	// Normalize the view DataViews hands back before persisting it.
+	// `effectiveView` strips `mediaField` while in table layout, so
+	// without this a table→grid toggle would store a grid view that
+	// lost its preview tile, leaving grid cards with no media field.
+	// Grid always carries `mediaField: 'preview'`; table never does
+	// (it's stripped in `effectiveView` regardless, but drop it here
+	// too so the persisted state stays canonical). This keeps a
+	// grid→table→grid round-trip lossless.
+	const handleChangeView = useCallback( ( nextView: View ) => {
+		if ( 'grid' === nextView.type ) {
+			setView( { ...nextView, mediaField: 'preview' } );
+			return;
+		}
+		const { mediaField: _stripped, ...rest } = nextView;
+		setView( rest as View );
+	}, [] );
+
 	if ( false === pluginsReady ) {
 		return (
 			<Fragment>
@@ -462,7 +479,7 @@ const Emails = () => {
 				data={ processedData }
 				fields={ fields }
 				view={ effectiveView }
-				onChangeView={ setView }
+				onChangeView={ handleChangeView }
 				actions={ actions }
 				paginationInfo={ paginationInfo }
 				defaultLayouts={ { table: {}, grid: {} } }

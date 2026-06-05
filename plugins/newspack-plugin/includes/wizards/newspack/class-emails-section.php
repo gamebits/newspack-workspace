@@ -129,6 +129,15 @@ class Emails_Section extends Wizard_Section {
 				'callback'            => [ __CLASS__, 'api_update_settings' ],
 				'permission_callback' => [ $this, 'api_permissions_check' ],
 				'args'                => [
+					// `sender_name` flows into the mail `From:` header via
+					// `Emails::get_from_name()`. `sanitize_text_field()`
+					// strips CR/LF (and other control chars), which is what
+					// closes the header-injection vector here — that
+					// newline-stripping is LOAD-BEARING, not incidental. If
+					// this callback is ever swapped for one that preserves
+					// newlines, re-add an explicit `str_replace`/`preg_replace`
+					// CR/LF guard before the value reaches the header, or
+					// header injection silently reopens.
 					'sender_name'           => [
 						'type'              => 'string',
 						'required'          => true,
@@ -710,15 +719,26 @@ class Emails_Section extends Wizard_Section {
 			$home_host = substr( $home_host, 4 );
 		}
 
+		// Run each derived default through the SAME filter the send
+		// path applies (`Emails::get_from_name()` → `newspack_from_name`,
+		// `Emails::get_from_email()` → `newspack_from_email`,
+		// `Emails::get_reply_to_email()` → `newspack_reply_to_email`).
+		// When no override is saved, the send path resolves to the
+		// derived default and then filters it — so the modal placeholder
+		// must filter too, or a site that hooks any of these filters
+		// would show one default in the UI while outbound mail used
+		// another. Saved overrides stay raw (top-level keys above): they
+		// render as the input `value`, and the unfiltered stored string
+		// is what the publisher actually controls.
 		return rest_ensure_response(
 			[
 				'sender_name'           => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_name', '' ),
 				'sender_email_address'  => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_email_address', '' ),
 				'contact_email_address' => (string) get_option( Reader_Activation::OPTIONS_PREFIX . 'contact_email_address', '' ),
 				'defaults'              => [
-					'sender_name'           => get_bloginfo( 'name' ),
-					'sender_email_address'  => 'no-reply@' . $home_host,
-					'contact_email_address' => get_bloginfo( 'admin_email' ),
+					'sender_name'           => apply_filters( 'newspack_from_name', get_bloginfo( 'name' ) ),
+					'sender_email_address'  => apply_filters( 'newspack_from_email', 'no-reply@' . $home_host ),
+					'contact_email_address' => apply_filters( 'newspack_reply_to_email', get_bloginfo( 'admin_email' ) ),
 				],
 			]
 		);
