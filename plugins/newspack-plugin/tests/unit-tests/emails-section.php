@@ -561,6 +561,38 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Trash-failure branch: when `wp_trash_post()` fails, the handler returns
+	 * 400 with the `newspack_reset_email_reset_failed` code and leaves the
+	 * post un-trashed. The failure is forced via the `pre_trash_post`
+	 * short-circuit filter (returning non-null makes wp_trash_post() return
+	 * that value without trashing). Locks the error code introduced when the
+	 * endpoint moved off the donations namespace in NPPD-1535.
+	 */
+	public function test_reset_email_trash_failure() {
+		$post_id = wp_insert_post(
+			[
+				'post_type'   => Emails::POST_TYPE,
+				'post_status' => 'publish',
+				'post_title'  => 'Test email for reset failure',
+				'meta_input'  => [
+					Emails::EMAIL_CONFIG_NAME_META => 'receipt',
+				],
+			]
+		);
+
+		add_filter( 'pre_trash_post', '__return_false' );
+		$request = new WP_REST_Request( 'DELETE' );
+		$request->set_param( 'id', $post_id );
+		$response = Emails_Section::api_reset_email( $request );
+		remove_filter( 'pre_trash_post', '__return_false' );
+
+		$this->assertInstanceOf( WP_Error::class, $response, 'A failed trash must return WP_Error.' );
+		$this->assertSame( 'newspack_reset_email_reset_failed', $response->get_error_code() );
+		$this->assertSame( 400, $response->get_error_data()['status'] );
+		$this->assertSame( 'publish', get_post_status( $post_id ), 'Post must remain un-trashed when the trash fails.' );
+	}
+
+	/**
 	 * Non-existent post ID returns 400 with the invalid_arg error code.
 	 *
 	 * Uses `wp_insert_post` + `wp_delete_post( … true )` to derive a
