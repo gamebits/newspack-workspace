@@ -150,8 +150,14 @@ const Emails = () => {
 		// already wrote, so patch the row in place and skip the full
 		// refetch (which would otherwise re-pay the N+1 query in
 		// Emails::get_emails on every toggle).
-		const prev = data;
-		setData( data.map( email => ( email.post_id === postId ? { ...email, status: nextStatus } : email ) ) );
+		//
+		// Capture only THIS row's prior status, not a snapshot of the whole
+		// array. Rolling back to a full-array snapshot would clobber any
+		// unrelated row an overlapping request mutated in the meantime; on
+		// failure we restore just the failed row via a functional update so
+		// concurrent edits to other rows survive.
+		const prevStatus = data.find( email => email.post_id === postId )?.status;
+		setData( prevData => prevData.map( email => ( email.post_id === postId ? { ...email, status: nextStatus } : email ) ) );
 		wizardApiFetch(
 			{
 				path: `/wp/v2/${ postType }/${ postId }`,
@@ -160,8 +166,11 @@ const Emails = () => {
 			},
 			{
 				onError() {
-					// Roll back optimistic update on failure.
-					setData( prev );
+					// Roll back only the failed row, leaving any concurrent
+					// changes to other rows intact.
+					setData( prevData =>
+						prevData.map( email => ( email.post_id === postId ? { ...email, status: prevStatus ?? email.status } : email ) )
+					);
 				},
 			}
 		);
@@ -402,6 +411,23 @@ const Emails = () => {
 		return view;
 	}, [ view ] );
 
+	// Normalize the view DataViews hands back before persisting it.
+	// `effectiveView` strips `mediaField` while in table layout, so
+	// without this a table→grid toggle would store a grid view that
+	// lost its preview tile, leaving grid cards with no media field.
+	// Grid always carries `mediaField: 'preview'`; table never does
+	// (it's stripped in `effectiveView` regardless, but drop it here
+	// too so the persisted state stays canonical). This keeps a
+	// grid→table→grid round-trip lossless.
+	const handleChangeView = useCallback( ( nextView: View ) => {
+		if ( 'grid' === nextView.type ) {
+			setView( { ...nextView, mediaField: 'preview' } );
+			return;
+		}
+		const { mediaField: _stripped, ...rest } = nextView;
+		setView( rest as View );
+	}, [] );
+
 	if ( false === pluginsReady ) {
 		return (
 			<Fragment>
@@ -468,7 +494,7 @@ const Emails = () => {
 				data={ processedData }
 				fields={ fields }
 				view={ effectiveView }
-				onChangeView={ setView }
+				onChangeView={ handleChangeView }
 				actions={ actions }
 				paginationInfo={ paginationInfo }
 				defaultLayouts={ { table: {}, grid: {} } }

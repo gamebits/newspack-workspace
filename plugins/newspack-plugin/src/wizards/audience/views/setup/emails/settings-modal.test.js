@@ -21,12 +21,16 @@ const mockWizardApiFetch = jest.fn();
 const mockResetError = jest.fn();
 const mockAddNotice = jest.fn();
 const mockRequestConfirm = jest.fn();
+// Mutable hook state so individual tests can drive the fetching /
+// error surfaces the modal reads. Reset in beforeEach.
+let mockIsFetching = false;
+let mockErrorMessage = null;
 
 jest.mock( '../../../../hooks/use-wizard-api-fetch', () => ( {
 	useWizardApiFetch: () => ( {
 		wizardApiFetch: ( ...args ) => mockWizardApiFetch( ...args ),
-		isFetching: false,
-		errorMessage: null,
+		isFetching: mockIsFetching,
+		errorMessage: mockErrorMessage,
 		resetError: ( ...args ) => mockResetError( ...args ),
 	} ),
 } ) );
@@ -69,7 +73,10 @@ jest.mock( '@wordpress/components', () => {
 	// a child — keeping it inside the label would fold into the input's
 	// accessible name and break getByLabelText('Sender Name'). The real
 	// TextControl uses aria-describedby for the same separation.
-	const TextControl = ( { label, help, value, onChange, type, required } ) =>
+	// `...rest` forwards passthrough props (e.g. `aria-invalid`) onto the
+	// input, mirroring the real TextControl's behavior, so tests can
+	// assert the accessible invalid state.
+	const TextControl = ( { label, help, value, onChange, type, required, ...rest } ) =>
 		React.createElement(
 			'div',
 			null,
@@ -82,6 +89,7 @@ jest.mock( '@wordpress/components', () => {
 					value: value === undefined ? '' : value,
 					onChange: e => onChange( e.target.value ),
 					required: required || undefined,
+					...rest,
 				} )
 			),
 			help ? React.createElement( 'span', null, help ) : null
@@ -202,12 +210,45 @@ const setUpFetchMock = ( initial = SAMPLE_INITIAL ) => {
 	} );
 };
 
+// GET succeeds (populates + loads the form) but POST rejects: fires the
+// modal's `onError` and returns a rejected promise, exercising the
+// modal-level `.catch()` unhandled-rejection guard. Used to assert the
+// modal stays open on save failure.
+const setUpFetchMockPostFails = ( initial = SAMPLE_INITIAL ) => {
+	mockWizardApiFetch.mockImplementation( ( args, handlers ) => {
+		if ( args.method === 'POST' ) {
+			if ( handlers && handlers.onError ) {
+				handlers.onError();
+			}
+			return Promise.reject( new Error( 'save failed' ) );
+		}
+		if ( handlers && handlers.onSuccess ) {
+			handlers.onSuccess( initial );
+		}
+		return Promise.resolve();
+	} );
+};
+
+// GET rejects: fires `onError` and returns a rejected promise so the
+// form never reaches the loaded state. Exercises the GET-rejection
+// `.catch()` guard and the `! loaded` Save gate.
+const setUpFetchMockGetFails = () => {
+	mockWizardApiFetch.mockImplementation( ( args, handlers ) => {
+		if ( handlers && handlers.onError ) {
+			handlers.onError();
+		}
+		return Promise.reject( new Error( 'load failed' ) );
+	} );
+};
+
 describe( 'SettingsModal', () => {
 	beforeEach( () => {
 		mockWizardApiFetch.mockReset();
 		mockResetError.mockReset();
 		mockAddNotice.mockReset();
 		mockRequestConfirm.mockReset();
+		mockIsFetching = false;
+		mockErrorMessage = null;
 		// Window globals emails.tsx reads at mount. Empty newspack_emails
 		// is still truthy, so the grid's mount-time fetch is skipped —
 		// only the modal will fire a fetch when opened.
@@ -313,5 +354,93 @@ describe( 'SettingsModal', () => {
 		expect( mockRequestConfirm ).toHaveBeenCalledTimes( 1 );
 		expect( mockRequestConfirm.mock.calls[ 0 ][ 0 ].when ).toBe( false );
 		expect( closeModal ).toHaveBeenCalled();
+	} );
+
+	it( 'renders the inline error Notice when the hook surfaces an errorMessage', async () => {
+		setUpFetchMock();
+		mockErrorMessage = 'Could not save transactional email settings.';
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ jest.fn() } /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'notice' ) ).toHaveTextContent( 'Could not save transactional email settings.' );
+		} );
+	} );
+
+	it( 'save failure: fires onError, keeps the modal open, dispatches no success notice', async () => {
+		setUpFetchMockPostFails();
+		const closeModal = jest.fn();
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ closeModal } /> );
+
+		await waitFor( () => {
+			expect( screen.getByLabelText( 'Sender Name' ).value ).toBe( 'My Site' );
+		} );
+
+		// Dirty + valid → Save enabled.
+		fireEvent.change( screen.getByLabelText( 'Sender Name' ), { target: { value: 'New Name' } } );
+		fireEvent.click( screen.getByRole( 'button', { name: 'Save' } ) );
+
+		// POST was issued and rejected (swallowed by the modal-level
+		// .catch — no unhandled rejection).
+		await waitFor( () => {
+			expect( mockWizardApiFetch.mock.calls.some( ( [ args ] ) => args.method === 'POST' ) ).toBe( true );
+		} );
+
+		// Modal stays open: closeModal never fires, no success notice.
+		expect( closeModal ).not.toHaveBeenCalled();
+		expect( mockAddNotice ).not.toHaveBeenCalled();
+	} );
+
+	it( 'disables Save while a request is in flight', async () => {
+		setUpFetchMock();
+		mockIsFetching = true;
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ jest.fn() } /> );
+
+		// Form loads from the GET, then dirty + valid — the only thing
+		// keeping Save disabled is the in-flight request.
+		await waitFor( () => {
+			expect( screen.getByLabelText( 'Sender Name' ).value ).toBe( 'My Site' );
+		} );
+		fireEvent.change( screen.getByLabelText( 'Sender Name' ), { target: { value: 'New Name' } } );
+
+		expect( screen.getByRole( 'button', { name: 'Save' } ) ).toBeDisabled();
+	} );
+
+	it( 'gates Save and flags the field on a malformed email', async () => {
+		setUpFetchMock();
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ jest.fn() } /> );
+
+		await waitFor( () => {
+			expect( screen.getByLabelText( 'Sender Email Address' ).value ).toBe( 'hello@example.com' );
+		} );
+
+		// Type a malformed (non-empty) email.
+		fireEvent.change( screen.getByLabelText( 'Sender Email Address' ), { target: { value: 'not-an-email' } } );
+
+		// Save is gated, the field is marked invalid, and field-level
+		// help explains the requirement.
+		expect( screen.getByRole( 'button', { name: 'Save' } ) ).toBeDisabled();
+		expect( screen.getByLabelText( 'Sender Email Address' ) ).toHaveAttribute( 'aria-invalid', 'true' );
+		expect( screen.getByText( 'Enter a valid email address, or leave blank to use the default.' ) ).toBeInTheDocument();
+	} );
+
+	it( 'GET failure: leaves Save disabled even when the user dirties a field (not-loaded guard)', async () => {
+		setUpFetchMockGetFails();
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ jest.fn() } /> );
+
+		// GET rejected → form never loaded. The fields render empty.
+		await waitFor( () => {
+			expect( mockWizardApiFetch ).toHaveBeenCalled();
+		} );
+
+		// Even after a valid, dirtying edit, the `! loaded` guard keeps
+		// Save disabled so a failed GET can't be overwritten with the
+		// empty-form values.
+		fireEvent.change( screen.getByLabelText( 'Sender Name' ), { target: { value: 'Typed After Failure' } } );
+		expect( screen.getByRole( 'button', { name: 'Save' } ) ).toBeDisabled();
 	} );
 } );

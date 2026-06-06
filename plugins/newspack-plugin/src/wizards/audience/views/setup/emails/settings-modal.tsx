@@ -124,16 +124,21 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 
 	const isDirty = JSON.stringify( settings ) !== JSON.stringify( initial );
 
-	// Client-side validation: empty is the intentional "revert to
+	// Per-field validation: empty is the intentional "revert to
 	// default" path, so it's accepted for every field. Email fields
 	// must validate when non-empty. Sender name has no format
-	// requirement. Plain expression rather than `useMemo` — the dep
+	// requirement. Plain expressions rather than `useMemo` — the dep
 	// `settings` is a new object reference on every keystroke, so a
 	// memo would never hit; the wrapping was misleading without
 	// behavior.
-	const isClientSideValid =
-		( settings.sender_email_address === '' || isValidEmail( settings.sender_email_address ) ) &&
-		( settings.contact_email_address === '' || isValidEmail( settings.contact_email_address ) );
+	//
+	// These per-field flags drive both the aggregate Save gate AND the
+	// inline field-level help/`aria-invalid` below, so a disabled Save
+	// button always has a visible, screen-reader-announced reason next
+	// to the offending field rather than a dead button with no cue.
+	const isSenderEmailInvalid = settings.sender_email_address !== '' && ! isValidEmail( settings.sender_email_address );
+	const isContactEmailInvalid = settings.contact_email_address !== '' && ! isValidEmail( settings.contact_email_address );
+	const isClientSideValid = ! isSenderEmailInvalid && ! isContactEmailInvalid;
 
 	const handleSave = () => {
 		if ( isFetching ) {
@@ -203,6 +208,12 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 		return null;
 	}
 
+	// Field-level message shown (and announced via `aria-describedby`,
+	// which `TextControl` wires from `help`) when an email field holds
+	// a malformed non-empty value. Declared after the early return so
+	// the `__()` call isn't evaluated on the not-rendered path.
+	const invalidEmailHelp = __( 'Enter a valid email address, or leave blank to use the default.', 'newspack-plugin' );
+
 	return (
 		// The wrapping div is an escape hatch for a ReactNode/ReactElement
 		// type mismatch on `confirmDialog` — Fragment-wrapping triggers a
@@ -227,24 +238,34 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 					/>
 					<TextControl
 						label={ __( 'Sender Email Address', 'newspack-plugin' ) }
-						help={ __(
-							"Email address to use as the sender of transactional emails. Leave blank to use a no-reply address at your site's domain.",
-							'newspack-plugin'
-						) }
+						help={
+							isSenderEmailInvalid
+								? invalidEmailHelp
+								: __(
+										"Email address to use as the sender of transactional emails. Leave blank to use a no-reply address at your site's domain.",
+										'newspack-plugin'
+								  )
+						}
 						type="email"
 						value={ settings.sender_email_address }
 						placeholder={ defaults.sender_email_address }
+						aria-invalid={ isSenderEmailInvalid }
 						onChange={ ( value: string ) => setSettings( { ...settings, sender_email_address: value } ) }
 					/>
 					<TextControl
 						label={ __( 'Contact Email Address', 'newspack-plugin' ) }
-						help={ __(
-							"This email will be used as 'Reply-To' for transactional emails. Leave blank to use your site's admin email.",
-							'newspack-plugin'
-						) }
+						help={
+							isContactEmailInvalid
+								? invalidEmailHelp
+								: __(
+										"This email will be used as 'Reply-To' for transactional emails. Leave blank to use your site's admin email.",
+										'newspack-plugin'
+								  )
+						}
 						type="email"
 						value={ settings.contact_email_address }
 						placeholder={ defaults.contact_email_address }
+						aria-invalid={ isContactEmailInvalid }
 						onChange={ ( value: string ) => setSettings( { ...settings, contact_email_address: value } ) }
 					/>
 				</VStack>
