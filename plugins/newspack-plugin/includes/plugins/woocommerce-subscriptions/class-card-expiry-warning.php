@@ -360,26 +360,55 @@ class Card_Expiry_Warning {
 			self::get_days_before_expiry(),
 			PHP_INT_MAX
 		);
-		$count = 0;
+		$count    = 0;
+		$failures = 0;
 		foreach ( $pairs as $pair ) {
 			$token      = $pair['token'];
 			$token_id   = $token->get_id();
 			$expiry_key = $token_id . ':' . $token->get_expiry_month() . '/' . $token->get_expiry_year();
-			// Per-token meta key (NPPD-1568): a subscription with multiple
-			// in-window CC tokens gets independent suppression state per
-			// token. The earlier single-key shape collapsed all tokens
-			// onto one value and lost suppression for all but the last
-			// iterated token.
-			$pair['subscription']->update_meta_data( self::SEEDED_META_PREFIX . $token_id, $expiry_key );
-			$pair['subscription']->save();
-			++$count;
+			// Per-pair try/catch mirrors scan_expiring_cards: a single
+			// throwing save (a third-party WC hook, a transient DB error)
+			// must not abort the seed and leave SEEDED_OPTION unwritten —
+			// that would re-enter seed mode on the next cron and keep
+			// skipping normal sends indefinitely. A pair that fails to seed
+			// here simply isn't suppressed, so the next normal scan treats
+			// it as unprocessed and sends ONE warning (bounded, acceptable)
+			// rather than the whole site re-seeding forever.
+			try {
+				// Per-token meta key (NPPD-1568): a subscription with multiple
+				// in-window CC tokens gets independent suppression state per
+				// token. The earlier single-key shape collapsed all tokens
+				// onto one value and lost suppression for all but the last
+				// iterated token.
+				$pair['subscription']->update_meta_data( self::SEEDED_META_PREFIX . $token_id, $expiry_key );
+				$pair['subscription']->save();
+				++$count;
+			} catch ( \Throwable $e ) {
+				++$failures;
+				Logger::log(
+					sprintf(
+						'Card expiry warning seed failed for subscription %d (token %d): %s',
+						$pair['subscription']->get_id(),
+						$token_id,
+						$e->getMessage()
+					),
+					'NEWSPACK-CARD-EXPIRY',
+					'error'
+				);
+				continue;
+			}
 		}
-		// autoload=false so this option doesn't sit in alloptions on every pageload.
+		// autoload=false so this option doesn't sit in alloptions on every
+		// pageload. Written unconditionally even if some pairs failed: the
+		// seed is "best effort, once" — re-running it (by leaving the flag
+		// unset) would re-enter seed mode and starve normal sends, the very
+		// bug this guards against.
 		update_option( self::SEEDED_OPTION, '1', false );
 
 		$message = sprintf(
-			'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
-			$count
+			'Card expiry warning first-deploy seed: marked %d (subscription, token) pair(s) as already-warned without sending%s. Run `wp newspack card-expiry-warning-backfill` to send the deferred warnings.',
+			$count,
+			$failures > 0 ? sprintf( ' (%d pair(s) failed to seed and may receive one normal warning)', $failures ) : ''
 		);
 
 		// Logger::log is gated by NEWSPACK_LOG_LEVEL (off on most
@@ -387,12 +416,15 @@ class Card_Expiry_Warning {
 		// visible to Newspack Manager and any other listeners on the
 		// action — the seed is a significant one-time event and must
 		// be diagnostically discoverable.
-		Logger::log( $message, 'NEWSPACK-CARD-EXPIRY', 'warning' );
+		Logger::log( $message, 'NEWSPACK-CARD-EXPIRY', $failures > 0 ? 'error' : 'warning' );
 		Logger::newspack_log(
 			'card_expiry_warning_seeded',
 			$message,
-			[ 'pair_count' => $count ],
-			'warning'
+			[
+				'pair_count'   => $count,
+				'failed_count' => $failures,
+			],
+			$failures > 0 ? 'error' : 'warning'
 		);
 	}
 
@@ -457,12 +489,14 @@ class Card_Expiry_Warning {
 		// A card with expiry MM/YYYY is valid through the last day of that month.
 		// Find tokens whose last-valid-day falls between today and $cutoff.
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		// LENGTH guard on expiry_year: WC_Payment_Token_CC::set_expiry_year
-		// does not zero-pad (unlike set_expiry_month), so legacy 2-digit
-		// values would produce a year-26 date through STR_TO_DATE and
-		// silently fall outside the BETWEEN window. Filter them out at
-		// the SQL level so we don't miss them — they can't be matched
-		// here either way, but the guard makes the skip explicit.
+		// expiry_year normalization: WC_Payment_Token_CC::set_expiry_year
+		// does not zero-pad (unlike set_expiry_month), so a gateway that
+		// stores a 2-digit year ('26') would produce a year-0026 date via
+		// STR_TO_DATE and silently fall outside the BETWEEN window — those
+		// readers would never be warned. Normalize 2-digit years to 20YY in
+		// the CASE below instead of excluding them, and REGEXP-guard the
+		// column so non-numeric / wrong-length garbage is still skipped
+		// rather than fed to STR_TO_DATE.
 		// ORDER BY token_id ASC for deterministic ordering across cron
 		// runs (without it, MySQL is free to return any LIMIT-sized
 		// subset and seeding/normal-scan handoffs become unstable on
@@ -476,10 +510,16 @@ class Card_Expiry_Warning {
 				INNER JOIN {$wpdb->prefix}woocommerce_payment_tokenmeta ey
 					ON ey.payment_token_id = t.token_id AND ey.meta_key = 'expiry_year'
 				WHERE t.type = 'CC'
-					AND CHAR_LENGTH( ey.meta_value ) = 4
+					AND ey.meta_value REGEXP '^[0-9]{2}([0-9]{2})?$'
 					AND LAST_DAY(
 						STR_TO_DATE(
-							CONCAT(ey.meta_value, '-', em.meta_value, '-01'),
+							CONCAT(
+								CASE WHEN CHAR_LENGTH( ey.meta_value ) = 2
+									THEN CONCAT( '20', ey.meta_value )
+									ELSE ey.meta_value
+								END,
+								'-', em.meta_value, '-01'
+							),
 							'%%Y-%%m-%%d'
 						)
 					) BETWEEN %s AND %s
@@ -624,9 +664,30 @@ class Card_Expiry_Warning {
 			],
 		];
 
+		// The earlier guard only confirms a user exists, not that the
+		// subscription carries a billing email. Fall back to the account
+		// email when billing is empty/invalid; if neither is usable, skip
+		// this pair with a log entry rather than firing a send that fails
+		// and leaves the pair to retry forever.
+		$recipient = $subscription->get_billing_email();
+		if ( ! is_email( $recipient ) ) {
+			$recipient = $customer->user_email;
+		}
+		if ( ! is_email( $recipient ) ) {
+			Logger::log(
+				sprintf(
+					'Card expiry warning skipped for subscription %d: no valid billing or account email.',
+					$subscription->get_id()
+				),
+				'NEWSPACK-CARD-EXPIRY',
+				'warning'
+			);
+			return false;
+		}
+
 		$sent = Emails::send_email(
 			self::EMAIL_TYPE,
-			$subscription->get_billing_email(),
+			$recipient,
 			$placeholders
 		);
 
@@ -637,7 +698,26 @@ class Card_Expiry_Warning {
 			// this is safe whether the pair was previously seeded or not.
 			$subscription->delete_meta_data( self::SEEDED_META_PREFIX . $token_id );
 			$subscription->update_meta_data( self::SENT_META_PREFIX . $token_id, $expiry_key );
-			$subscription->save();
+			try {
+				$subscription->save();
+			} catch ( \Throwable $e ) {
+				// The mail was already accepted by Emails::send_email(). If
+				// persisting the SENT marker throws (DB write, a third-party
+				// save hook), still report success so the caller counts this
+				// against the per-pass cap — otherwise a save failure would
+				// let the cap be bypassed AND re-attempt the same address.
+				// The marker not landing means a later pass could re-send;
+				// logged at error level so the rare case is diagnosable.
+				Logger::log(
+					sprintf(
+						'Card expiry warning sent for subscription %d but persisting the SENT marker failed: %s. The warning may re-send on a later pass.',
+						$subscription->get_id(),
+						$e->getMessage()
+					),
+					'NEWSPACK-CARD-EXPIRY',
+					'error'
+				);
+			}
 		}
 		return (bool) $sent;
 	}

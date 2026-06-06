@@ -255,9 +255,12 @@ class WooCommerce_Subscriptions {
 	 * [--limit=<n>]
 	 * : Cap sends per invocation. Default: no cap. The cron path's
 	 *   per-pass cap (`newspack_card_expiry_warning_limit_per_pass`,
-	 *   default 100) protects against unbounded discovery queries on
-	 *   migration / burst days — this command is a publisher-initiated
-	 *   explicit action where no cap is the expected default.
+	 *   default 100) bounds the number of SENDS per cron pass on
+	 *   migration / burst days — it does NOT bound discovery, which runs
+	 *   unbounded (PHP_INT_MAX, no SQL LIMIT) and filters already-processed
+	 *   pairs via the idempotency gate. This command is a
+	 *   publisher-initiated explicit action where no cap is the expected
+	 *   default.
 	 *
 	 * [--days=<n>]
 	 * : Window in days. Defaults to the value of
@@ -349,7 +352,8 @@ class WooCommerce_Subscriptions {
 			);
 		}
 
-		$sent = 0;
+		$sent     = 0;
+		$failures = 0;
 		foreach ( $pairs as $pair ) {
 			if ( $sent >= $limit ) {
 				break;
@@ -370,19 +374,41 @@ class WooCommerce_Subscriptions {
 				++$sent;
 				continue;
 			}
-			if ( Card_Expiry_Warning::maybe_send_warning( $subscription, $token, true ) ) {
-				WP_CLI::log( $line );
-				++$sent;
+			// Isolate per-pair failures: one throwing pair (a bad address, a
+			// third-party hook throwing on save) must not abort the backfill
+			// and block every later valid pair across operator re-runs.
+			try {
+				if ( Card_Expiry_Warning::maybe_send_warning( $subscription, $token, true ) ) {
+					WP_CLI::log( $line );
+					++$sent;
+				}
+			} catch ( \Throwable $e ) {
+				++$failures;
+				WP_CLI::warning(
+					sprintf(
+						'Failed for sub #%d (card ...%s): %s',
+						$subscription->get_id(),
+						$token->get_last4(),
+						$e->getMessage()
+					)
+				);
 			}
 		}
 
-		WP_CLI::success(
-			sprintf(
-				'%s %d email(s).',
-				$is_dry_run ? 'Would send' : 'Sent',
-				$sent
-			)
+		$summary = sprintf(
+			'%s %d email(s).',
+			$is_dry_run ? 'Would send' : 'Sent',
+			$sent
 		);
+
+		// Exit non-zero when any pair failed so cron/automation wrappers
+		// notice a partial backfill instead of treating it as a clean run.
+		// WP_CLI::error halts with a non-zero status.
+		if ( $failures > 0 ) {
+			WP_CLI::error( sprintf( '%s %d pair(s) failed — see warnings above.', $summary, $failures ) );
+		}
+
+		WP_CLI::success( $summary );
 	}
 
 	/**
