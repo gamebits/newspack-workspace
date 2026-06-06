@@ -103,8 +103,12 @@ class Newspack_Settings extends Wizard {
 		$extra_args = $_GET;
 		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 		unset( $extra_args['page'], $extra_args['emails'] );
+		// `map_deep` (not `array_map`) so array-valued query params
+		// (e.g. `?foo[]=a&foo[]=b`) are sanitized recursively instead of
+		// being passed to `sanitize_text_field` as an array — which warns
+		// and drops the param, losing deep-link context.
 		$target = add_query_arg(
-			array_merge( [ 'page' => 'newspack-audience' ], array_map( 'sanitize_text_field', wp_unslash( $extra_args ) ) ),
+			array_merge( [ 'page' => 'newspack-audience' ], map_deep( wp_unslash( $extra_args ), 'sanitize_text_field' ) ),
 			admin_url( 'admin.php' )
 		) . '#/emails';
 		wp_safe_redirect( $target );

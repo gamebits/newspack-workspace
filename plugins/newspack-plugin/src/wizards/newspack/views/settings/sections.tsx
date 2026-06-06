@@ -40,7 +40,14 @@ if ( hash === '#/emails' || hash.startsWith( '#/emails/' ) || hash.startsWith( '
 	// Audience (where unsupported suffixes resolve to /#/emails via the
 	// Audience HashRouter's own catch-all).
 	const suffix = hash.slice( '#/emails'.length );
-	window.location.replace( `${ window.location.pathname }?page=newspack-audience#/emails${ suffix }` );
+	// Preserve any existing query args before the hash (e.g. `?highlight=x`)
+	// and replace only `page` — matching the server-side redirect in
+	// class-newspack-settings.php. Building the target as a bare
+	// `?page=newspack-audience` would drop deep-link context that the server
+	// path keeps, an asymmetry between the two redirect routes.
+	const params = new URLSearchParams( window.location.search );
+	params.set( 'page', 'newspack-audience' );
+	window.location.replace( `${ window.location.pathname }?${ params.toString() }#/emails${ suffix }` );
 }
 
 const settingsTabs = window.newspackSettings;
