@@ -532,9 +532,13 @@ class Emails {
 		}
 		$serialized_email = [
 			'type'                => $type,
-			'category'            => $email_config['category'],
-			'label'               => $email_config['label'],
-			'description'         => $email_config['description'],
+			// `category`, `label`, and `description` are provider-specified
+			// and NOT among the keys `apply_config_defaults()` guarantees, so
+			// a third-party config can omit them. Reading them unguarded would
+			// raise an undefined-key warning under PHP 8.3; coalesce to ''.
+			'category'            => $email_config['category'] ?? '',
+			'label'               => $email_config['label'] ?? '',
+			'description'         => $email_config['description'] ?? '',
 			'post_id'             => $post_id,
 			'edit_link'           => $edit_link,
 			'subject'             => get_the_title( $post_id ),
