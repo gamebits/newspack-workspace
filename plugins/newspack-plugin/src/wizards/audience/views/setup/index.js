@@ -21,6 +21,7 @@ import Router from '../../../../../packages/components/src/proxied-imports/route
 import ContentGating from './content-gating';
 import Payment from './payment';
 import Emails from './emails';
+import { getSetupTabs } from './tabs';
 
 const { HashRouter, Redirect, Route, Switch } = Router;
 
@@ -97,26 +98,10 @@ function AudienceWizard( { confirmAction, pluginRequirements, wizardApiFetch }, 
 		fetchConfig();
 	}, [] );
 
-	let tabs = [
-		{
-			label: config.enabled ? __( 'Configuration', 'newspack-plugin' ) : __( 'Setup', 'newspack-plugin' ),
-			path: '/',
-		},
-		config.enabled &&
-			newspackAudience.has_memberships && {
-				label: __( 'Content Gating', 'newspack-plugin' ),
-				path: '/content-gating',
-			},
-		{
-			label: __( 'Checkout & Payment', 'newspack-plugin' ),
-			path: '/payment',
-		},
-		{
-			label: __( 'Emails', 'newspack-plugin' ),
-			path: '/emails',
-		},
-	];
-	tabs = tabs.filter( tab => tab );
+	const tabs = getSetupTabs( {
+		enabled: config.enabled,
+		hasMemberships: newspackAudience.has_memberships,
+	} );
 
 	const getSharedProps = ( configKey, type = 'checkbox' ) => {
 		const props = {
