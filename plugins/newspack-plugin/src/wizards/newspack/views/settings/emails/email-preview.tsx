@@ -228,7 +228,16 @@ const EmailPreview: React.FC< EmailPreviewProps > = ( { postId } ) => {
 					 * sandbox is load-bearing for XSS containment. If interactive
 					 * previews are needed later, use `allow-scripts` only and
 					 * communicate height via postMessage instead of contentDocument
-					 * reads. */
+					 * reads.
+					 *
+					 * NOTE: `<meta http-equiv="refresh">` still works inside a
+					 * srcDoc iframe with `allow-same-origin` even without
+					 * `allow-scripts`. It's not a security issue (the email HTML
+					 * is admin-supplied), but a meta-refresh in a publisher's
+					 * template would make this thumbnail reload every N seconds
+					 * and spin the CPU. If that's ever observed, strip
+					 * meta-refresh tags from the preview HTML server-side. */
+					aria-hidden="true"
 					sandbox="allow-same-origin"
 					tabIndex={ -1 }
 					title={ __( 'Email preview', 'newspack-plugin' ) }

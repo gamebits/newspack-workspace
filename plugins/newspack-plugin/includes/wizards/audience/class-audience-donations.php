@@ -229,6 +229,15 @@ class Audience_Donations extends Wizard {
 		$id     = $params['id'];
 		$email  = get_post( $id );
 
+		// Source boundary: this route can only ever reset Newspack-managed
+		// emails. The `post_type === Emails::POST_TYPE` check below is the
+		// enforcement — non-Newspack sources are never stored as POST_TYPE
+		// posts. WooCommerce-source rows are live `WC_Email` objects with
+		// `wc:`-prefixed string ids, which additionally can't match the
+		// route's numeric-only `(?P<id>\d+)` pattern. So a direct REST call
+		// cannot reset a row the UI gates behind `source === 'newspack'`.
+		// NPPD-1532 moves this handler under wizard/newspack-settings/emails;
+		// the boundary check moves with it.
 		if ( $email === null || $email->post_type !== Emails::POST_TYPE ) {
 			return new WP_Error(
 				'newspack_reset_donation_email_invalid_arg',

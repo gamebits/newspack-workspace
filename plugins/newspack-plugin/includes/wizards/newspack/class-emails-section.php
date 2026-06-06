@@ -450,7 +450,15 @@ class Emails_Section extends Wizard_Section {
 	 * skipped when Reader Activation is disabled — that matches the
 	 * filter the wizard surface applies via filter_configs_by_ra_state
 	 * for visibility, and prevents an auth-only WC email from auto-firing
-	 * on a store-only site that never opted into RA.
+	 * on a store-only site that never opted into RA. Crucially they are
+	 * NOT added to the processed list while skipped, so enabling RA later
+	 * still gives them a real first-run pass.
+	 *
+	 * Write failures are not marked processed either: if
+	 * `set_wc_email_enabled_state()` fails to land the enable, the slug is
+	 * left out of the processed list so a later run retries it, and the
+	 * WCS master switch is not flipped on the back of a write that didn't
+	 * take.
 	 *
 	 * Special case: `customer_notification_auto_renewal` requires the WC
 	 * Subscriptions master switch
@@ -489,9 +497,15 @@ class Emails_Section extends Wizard_Section {
 			// path already hides them via filter_configs_by_ra_state;
 			// mirror that here so the write path doesn't fire unrelated
 			// WC emails on store-only sites.
+			//
+			// Skip WITHOUT marking processed: the config is only hidden
+			// because RA is off, so it never got a real first-run pass. If
+			// the publisher enables RA later, we want this recommended row
+			// reconsidered then. Burning it into the processed list here
+			// would permanently deny it the auto-enable it was due once it
+			// became eligible. Re-evaluation each admin pageload while RA is
+			// off is just the cheap chip check above.
 			if ( ! $ra_enabled && 'reader-revenue' !== ( $config['chip'] ?? '' ) ) {
-				$processed[] = $type;
-				$changed     = true;
 				continue;
 			}
 
@@ -509,12 +523,20 @@ class Emails_Section extends Wizard_Section {
 			// already disabled the email doesn't get the site-wide
 			// master switch silently flipped on.
 			if ( ! isset( $options['enabled'] ) ) {
-				WooCommerce_Emails::set_wc_email_enabled_state( $type, true );
+				if ( ! WooCommerce_Emails::set_wc_email_enabled_state( $type, true ) ) {
+					// Write failed (mailer unresolvable, option write
+					// rejected). Leave the slug UNPROCESSED so a later
+					// admin pageload retries it, and don't flip the
+					// site-wide WCS master switch off the back of an
+					// enable that never landed.
+					continue;
+				}
 
 				// WCS master switch: enable only when not present in the
-				// DB. `get_option(..., false)` returns the default `false`
-				// only when the option row doesn't exist — an explicit
-				// `'no'` returns `'no'` and is preserved.
+				// DB, and only now that the email enable actually
+				// succeeded. `get_option(..., false)` returns the default
+				// `false` only when the option row doesn't exist — an
+				// explicit `'no'` returns `'no'` and is preserved.
 				if (
 					'customer_notification_auto_renewal' === $type
 					&& false === get_option( self::WCS_MASTER_SWITCH_OPTION, false )
@@ -523,10 +545,11 @@ class Emails_Section extends Wizard_Section {
 				}
 			}
 
-			// Mark as processed regardless of whether we wrote — once we
-			// considered the slug, we don't reconsider it. Without this,
-			// a publisher with explicit 'no' would have us re-evaluate
-			// (and skip) the slug on every wizard load.
+			// Mark as processed. Reached either because the publisher
+			// already had a decision (isset above) or because the enable
+			// write just succeeded — both are "considered, don't revisit".
+			// A failed write took the `continue` above and is left
+			// unprocessed so it can retry.
 			$processed[] = $type;
 			$changed     = true;
 		}

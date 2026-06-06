@@ -144,8 +144,14 @@ const Emails = () => {
 		// already wrote, so patch the row in place and skip the full
 		// refetch (which would otherwise re-pay the N+1 query in
 		// Emails::get_emails on every toggle).
-		const prev = data;
-		setData( data.map( email => ( email.post_id === postId ? { ...email, status: nextStatus } : email ) ) );
+		//
+		// Capture only THIS row's prior status, not a snapshot of the whole
+		// array. Rolling back to a full-array snapshot would clobber any
+		// unrelated row an overlapping request mutated in the meantime; on
+		// failure we restore just the failed row via a functional update so
+		// concurrent edits to other rows survive.
+		const prevStatus = data.find( email => email.post_id === postId )?.status;
+		setData( prevData => prevData.map( email => ( email.post_id === postId ? { ...email, status: nextStatus } : email ) ) );
 		wizardApiFetch(
 			{
 				path: `/wp/v2/${ postType }/${ postId }`,
@@ -154,8 +160,11 @@ const Emails = () => {
 			},
 			{
 				onError() {
-					// Roll back optimistic update on failure.
-					setData( prev );
+					// Roll back only the failed row, leaving any concurrent
+					// changes to other rows intact.
+					setData( prevData =>
+						prevData.map( email => ( email.post_id === postId ? { ...email, status: prevStatus ?? email.status } : email ) )
+					);
 				},
 			}
 		);
