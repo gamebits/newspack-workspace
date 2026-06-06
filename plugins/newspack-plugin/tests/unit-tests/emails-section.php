@@ -158,7 +158,9 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	 * Verifies the wizard endpoint response structure after the rewrite:
 	 * top-level keys are correct, each row carries the new fields,
 	 * registry_slug is the config key string, no view_category leakage,
-	 * no WC-source rows in slice 1, and category sort grouping holds.
+	 * and category sort grouping holds. (WooCommerce-source surfacing is
+	 * covered in emails-section-woocommerce.php; slice 2a no longer
+	 * excludes WC rows here.)
 	 */
 
 	/**
