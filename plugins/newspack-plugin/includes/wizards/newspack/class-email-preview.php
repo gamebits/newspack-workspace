@@ -85,6 +85,17 @@ class Email_Preview {
 		// the path to within the plugin tree and require a `.php`
 		// extension before including. realpath() also resolves any
 		// `../` traversal away from the plugin root.
+		//
+		// Assumption: the jail boundary is `realpath( dirname(
+		// NEWSPACK_PLUGIN_FILE ) )` — the plugin's own resolved tree. On
+		// installs where the plugin (or a sibling plugin a third-party
+		// `newspack_email_configs` callback legitimately points at) lives
+		// behind a symlink — devkit/composer-installer or some Atomic
+		// layouts — the resolved target may fall outside this tree and be
+		// rejected. That errs CLOSED (no LFI/RCE), at the cost of a silent
+		// empty preview for those edge templates; acceptable given the
+		// security posture. See the rejected-path test in
+		// tests/unit-tests/email-preview.php.
 		$resolved = realpath( $template_path );
 		$plugin_root = realpath( dirname( NEWSPACK_PLUGIN_FILE ) );
 		if (
@@ -148,8 +159,19 @@ class Email_Preview {
 		$html_map = array_map( 'esc_html', $substitutions['html'] );
 		// Escape URL tokens.
 		$url_map = array_map( 'esc_url', $substitutions['url'] );
-		// Raw tokens are already safe (contain pre-escaped markup).
-		$raw_map = $substitutions['raw'];
+		// Raw tokens carry pre-escaped markup from our own builder, but the
+		// `newspack_email_preview_substitutions` filter can replace the whole
+		// `raw` bucket. A misbehaving third-party callback could hand back a
+		// non-string value or unsanitized HTML, which strtr would drop into
+		// the iframe srcDoc verbatim. Coerce each value to a string and run
+		// it through wp_kses_post() so the sandbox isn't the only thing
+		// containing post-filter raw markup. Our own raw values
+		// (`<a href="mailto:…">`, `<strong>…</strong>`) survive wp_kses_post
+		// unchanged.
+		$raw_map = array_map(
+			static fn( $value ) => wp_kses_post( is_string( $value ) ? $value : '' ),
+			$substitutions['raw']
+		);
 
 		return strtr( $html, array_merge( $html_map, $url_map, $raw_map ) );
 	}
@@ -204,6 +226,9 @@ class Email_Preview {
 				'*DATE*'                  => wp_date( get_option( 'date_format', 'F j, Y' ) ),
 				'*CANCELLATION_TITLE*'    => __( 'Subscription Cancelled', 'newspack-plugin' ),
 				'*CANCELLATION_TYPE*'     => __( 'subscription', 'newspack-plugin' ),
+				// CTA button label — used by the cancellation template
+				// (includes/templates/reader-revenue-emails/cancellation.php).
+				'*BUTTON_TEXT*'           => __( 'Manage subscription', 'newspack-plugin' ),
 
 				// Card expiry warning details.
 				'*CARD_LAST_4*'           => '4242',
@@ -217,6 +242,7 @@ class Email_Preview {
 			// Tokens used in href/src attributes — escaped with esc_url().
 			'url'  => [
 				'*SITE_URL*'               => $site_url,
+				'*SUBSCRIPTION_URL*'       => '#',
 				'*SITE_LOGO*'              => $site_logo_url ? $site_logo_url : '',
 				'*ACCOUNT_URL*'            => '#',
 				'*CANCELLATION_URL*'       => '#',
@@ -277,6 +303,42 @@ class Email_Preview {
 	}
 
 	/**
+	 * Whether a numeric `woo_email` post maps to a WC email that the wizard
+	 * currently surfaces.
+	 *
+	 * Reverse-resolves the post → WC_Email class name via the WC posts
+	 * manager, then confirms a `source='woocommerce'` entry in
+	 * {@see Emails::get_email_configs()} carries that class. Returns false
+	 * when WC isn't loaded, the post doesn't reverse-resolve, or no surfaced
+	 * config matches — i.e. a stale/orphan template post.
+	 *
+	 * @param int $post_id The woo_email post ID.
+	 * @return bool
+	 */
+	private static function woo_email_post_is_surfaced( int $post_id ): bool {
+		$manager_class = 'Automattic\\WooCommerce\\Internal\\EmailEditor\\WCTransactionalEmails\\WCTransactionalEmailPostsManager';
+		if ( ! class_exists( $manager_class ) ) {
+			return false;
+		}
+
+		$email_class_name = $manager_class::get_instance()->get_email_type_class_name_from_post_id( $post_id );
+		if ( empty( $email_class_name ) ) {
+			return false;
+		}
+
+		foreach ( Emails::get_email_configs() as $config ) {
+			if (
+				'woocommerce' === ( $config['source'] ?? '' )
+				&& ( $config['wc_email_class'] ?? '' ) === $email_class_name
+			) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Get rendered preview HTML for a WooCommerce block-editor email template.
 	 *
 	 * Tries the block-editor render path first (BlockEmailRenderer) which
@@ -327,13 +389,21 @@ class Email_Preview {
 		}
 
 		// Fallback: legacy render via EmailPreview (WC default styling).
+		// NOT cached under $cache_key: caching the classic result here would
+		// mask block-path recovery for up to an hour — a single transient
+		// block failure (e.g. mid-WC-update) would pin the classic render
+		// even after the block path comes back online. Classic render is
+		// fast (~30-50 ms), so re-rendering each request is cheap and lets
+		// the block path retry. Mirrors get_wc_classic_preview_html, which
+		// also doesn't cache.
 		try {
-			$html = $preview->render();
-			if ( ! empty( $html ) ) {
-				set_transient( $cache_key, $html, HOUR_IN_SECONDS );
-			}
-			return $html;
+			return $preview->render();
 		} catch ( \Throwable $e ) {
+			Logger::log(
+				"WC EmailPreview::render() legacy fallback threw for woo_email post $post_id ($email_class_name): " . $e->getMessage(),
+				'NEWSPACK-EMAILS',
+				'warning'
+			);
 			return false;
 		}
 	}
@@ -341,17 +411,40 @@ class Email_Preview {
 	/**
 	 * Build the transient cache key for a WC email preview.
 	 *
-	 * Includes the post's modified date so the cache naturally misses
-	 * after an edit — this is the sole invalidation mechanism. Old
-	 * transients expire via TTL.
+	 * Includes the post's modified date AND a short branding fingerprint.
+	 * The modified date catches template edits; the fingerprint catches
+	 * branding changes (theme color/logo, WC email option colors) that the
+	 * block render bakes in but that don't bump post_modified — without it a
+	 * branding change would serve a stale thumbnail until the TTL expires.
+	 * Old transients expire via TTL.
 	 *
 	 * @param int $post_id The woo_email post ID.
-	 * @return string Transient key (max 172 chars — within the 172-char limit).
+	 * @return string Transient key (well within the 172-char option-name limit).
 	 */
 	private static function get_wc_preview_cache_key( int $post_id ): string {
 		$post     = get_post( $post_id );
 		$modified = $post ? strtotime( $post->post_modified_gmt ) : 0;
-		return 'newspack_wc_email_preview_' . $post_id . '_' . $modified;
+
+		// 8 hex chars of an md5 over the branding inputs the block render
+		// reflects. Cheap to compute and collision-resistant enough for a
+		// cache-busting fingerprint (not a security boundary).
+		$fingerprint = substr(
+			md5(
+				(string) wp_json_encode(
+					[
+						get_theme_mod( 'custom_logo' ),
+						get_option( 'woocommerce_email_base_color' ),
+						get_option( 'woocommerce_email_background_color' ),
+						get_option( 'woocommerce_email_body_background_color' ),
+						get_option( 'woocommerce_email_text_color' ),
+					]
+				)
+			),
+			0,
+			8
+		);
+
+		return 'newspack_wc_email_preview_' . $post_id . '_' . $modified . '_' . $fingerprint;
 	}
 
 	/**
@@ -471,6 +564,13 @@ class Email_Preview {
 						'required'          => true,
 						'type'              => 'string',
 						'sanitize_callback' => 'sanitize_text_field',
+						// Mirror the URL path regex as an arg-level guard so a
+						// malformed id supplied out-of-band (body/query) is
+						// rejected before api_get_preview runs, not just one in
+						// the URL segment.
+						'validate_callback' => static function ( $value ) {
+							return 1 === preg_match( '/^(\d+|wc:[\w-]+)$/', (string) $value );
+						},
 					],
 				],
 			]
@@ -529,6 +629,7 @@ class Email_Preview {
 				$template_post = get_post( $template_post_id );
 				if (
 					$template_post
+					&& 'woo_email' === $template_post->post_type
 					&& in_array( $template_post->post_status, [ 'publish', 'draft', 'pending' ], true )
 				) {
 					$html = self::get_wc_preview_html( $template_post_id );
@@ -588,6 +689,19 @@ class Email_Preview {
 		}
 
 		if ( 'woo_email' === $post->post_type ) {
+			// Reverse-resolve the post → WC email class and confirm a
+			// currently-surfaced source='woocommerce' config carries it
+			// before rendering. Without this, a stale/orphan woo_email post
+			// the wizard no longer surfaces would still render through this
+			// endpoint (the `wc:` branch already validates against
+			// get_email_configs(); this brings the numeric branch in line).
+			if ( ! self::woo_email_post_is_surfaced( $post_id ) ) {
+				return new \WP_Error(
+					'newspack_email_preview_not_found',
+					__( 'Email not found.', 'newspack-plugin' ),
+					[ 'status' => 404 ]
+				);
+			}
 			$html = self::get_wc_preview_html( $post_id );
 		} elseif ( Emails::POST_TYPE === $post->post_type ) {
 			$html = self::get_preview_html( $post_id );
