@@ -100,7 +100,13 @@ const Emails = () => {
 	const [ data, setData ] = useState< EmailItem[] >( ( initial?.newspack_emails as EmailItem[] | undefined ) ?? [] );
 	const postType = initial?.post_type ?? emailSettings.postType;
 	const [ view, setView ] = useState< View >( DEFAULT_VIEW );
-	const [ activeChip, setActiveChip ] = useState< ChipValue >( 'reader-revenue' );
+	// Reader-revenue emails only exist on the Newspack platform; on
+	// RevEngine/Other the server returns only auth/account emails, so the
+	// chip bar collapses to the single "Authentication & account" group and
+	// defaults to it.
+	const isNewspackPlatform = Boolean( emailSettings.isNewspackPlatform );
+	const availableChips = isNewspackPlatform ? CHIPS : CHIPS.filter( chip => chip.value === 'auth-account' );
+	const [ activeChip, setActiveChip ] = useState< ChipValue >( isNewspackPlatform ? 'reader-revenue' : 'auth-account' );
 	const [ showSettingsModal, setShowSettingsModal ] = useState( false );
 
 	const selectChip = ( chip: ChipValue ) => {
@@ -465,7 +471,7 @@ const Emails = () => {
 					spacing={ 2 }
 					justify="flex-start"
 				>
-					{ CHIPS.map( chip => {
+					{ availableChips.map( chip => {
 						// During an active search, neither chip is filtering —
 						// render both as unpressed so the visual matches reality.
 						// Clicking either chip clears the search via selectChip

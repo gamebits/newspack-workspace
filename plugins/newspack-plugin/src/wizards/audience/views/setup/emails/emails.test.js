@@ -226,6 +226,10 @@ describe( 'Emails', () => {
 					newspackNewsletters: true,
 				},
 				postType: 'newspack_rr_email',
+				// Default to the Newspack platform so the full chip set (and
+				// reader-revenue default) applies. The non-Newspack case has
+				// its own test below.
+				isNewspackPlatform: true,
 			},
 		};
 		mockWizardApiFetch.mockImplementation( ( opts, callbacks ) => {
@@ -782,5 +786,22 @@ describe( 'Emails', () => {
 		// present for assistive tech but visually hidden via screen-reader-text.
 		const heading = screen.getByRole( 'heading', { level: 1, name: 'Emails' } );
 		expect( heading ).toHaveClass( 'screen-reader-text' );
+	} );
+
+	it( 'shows only the Authentication & account chip on a non-Newspack platform', async () => {
+		// NPPD-1538: on RevEngine/Other the server returns only auth/account
+		// emails, so the chip bar collapses to a single group and defaults to
+		// it — the Reader revenue chip is not rendered at all.
+		window.newspackAudience.emails.isNewspackPlatform = false;
+		const Emails = require( './emails' ).default;
+		render( <Emails /> );
+
+		await waitFor( () => {
+			expect( screen.getByTestId( 'dataviews' ) ).toBeInTheDocument();
+		} );
+
+		expect( screen.queryByRole( 'button', { name: 'Reader revenue' } ) ).not.toBeInTheDocument();
+		const authChip = screen.getByRole( 'button', { name: 'Authentication & account' } );
+		expect( authChip.getAttribute( 'aria-pressed' ) ).toBe( 'true' );
 	} );
 } );

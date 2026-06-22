@@ -1254,4 +1254,33 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 			wp_delete_user( $admin_id );
 		}
 	}
+
+	/**
+	 * Platform-scoped list (NPPD-1538): reader-revenue (commerce) emails
+	 * appear only when Newspack is the reader-revenue platform. On RevEngine
+	 * (nrh) and "Other", the list returns only auth/account emails — the
+	 * commerce emails never fire there (off-site checkout / nothing sent
+	 * through Newspack), so they're filtered out. The Emails tab itself stays
+	 * available on every platform; only the list is scoped.
+	 */
+	public function test_email_list_scopes_reader_revenue_to_newspack_platform() {
+		$prev_platform = \Newspack\Donations::get_platform_slug();
+		try {
+			\Newspack\Donations::set_platform_slug( 'wc' );
+			$wc_chips = array_column( Emails_Section::api_get_email_settings()['newspack_emails'], 'chip' );
+			$this->assertContains( 'reader-revenue', $wc_chips, 'Newspack platform must surface reader-revenue emails.' );
+
+			foreach ( [ 'nrh', 'other' ] as $platform ) {
+				\Newspack\Donations::set_platform_slug( $platform );
+				$chips = array_column( Emails_Section::api_get_email_settings()['newspack_emails'], 'chip' );
+				$this->assertNotContains(
+					'reader-revenue',
+					$chips,
+					sprintf( '"%s" platform must NOT surface reader-revenue emails.', $platform )
+				);
+			}
+		} finally {
+			\Newspack\Donations::set_platform_slug( $prev_platform );
+		}
+	}
 }

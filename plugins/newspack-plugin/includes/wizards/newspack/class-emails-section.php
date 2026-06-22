@@ -7,6 +7,7 @@
 
 namespace Newspack\Wizards\Newspack;
 
+use Newspack\Donations;
 use Newspack\Emails;
 use Newspack\Reader_Activation;
 use Newspack\Reader_Revenue_Emails;
@@ -417,6 +418,24 @@ class Emails_Section extends Wizard_Section {
 			if ( null !== $wc_row ) {
 				$newspack_emails[] = $wc_row;
 			}
+		}
+
+		// Reader-revenue (commerce) emails — receipt, welcome, cancellation,
+		// group-subscription invite — only fire when Newspack is the
+		// reader-revenue platform: WooCommerce orders drive them, whereas
+		// RevEngine redirects checkout off-site (and sends its own receipts)
+		// and "Other" sends nothing through Newspack. On non-Newspack
+		// platforms, surface only the auth/account emails, which are
+		// Reader-Activation-driven and platform-independent. Filtering here
+		// (not via tab visibility) keeps the Emails tab available everywhere
+		// while showing only the relevant set per platform.
+		if ( ! Donations::is_platform_wc() ) {
+			$newspack_emails = array_values(
+				array_filter(
+					$newspack_emails,
+					fn( $row ) => ( $row['chip'] ?? '' ) !== 'reader-revenue'
+				)
+			);
 		}
 
 		// Single category-only sort: reader-revenue → reader-activation → other.
