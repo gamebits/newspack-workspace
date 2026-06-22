@@ -108,6 +108,15 @@ class Card_Expiry_Warning {
 	const SENT_META_PREFIX = '_newspack_card_expiry_warning_sent_';
 
 	/**
+	 * How many times to attempt persisting the SENT marker after a
+	 * successful send before giving up. The mail is already accepted at
+	 * that point, so a bounded immediate retry narrows the window where
+	 * the marker is missing (which would let a later pass re-send) for
+	 * the common transient-failure case, without any new durable state.
+	 */
+	const SENT_MARKER_SAVE_ATTEMPTS = 3;
+
+	/**
 	 * Option flagging that the first-deploy seed pass has run.
 	 *
 	 * Stored with autoload=false so it doesn't sit in alloptions on
@@ -698,21 +707,32 @@ class Card_Expiry_Warning {
 			// this is safe whether the pair was previously seeded or not.
 			$subscription->delete_meta_data( self::SEEDED_META_PREFIX . $token_id );
 			$subscription->update_meta_data( self::SENT_META_PREFIX . $token_id, $expiry_key );
-			try {
-				$subscription->save();
-			} catch ( \Throwable $e ) {
-				// The mail was already accepted by Emails::send_email(). If
-				// persisting the SENT marker throws (DB write, a third-party
-				// save hook), still report success so the caller counts this
-				// against the per-pass cap — otherwise a save failure would
-				// let the cap be bypassed AND re-attempt the same address.
-				// The marker not landing means a later pass could re-send;
-				// logged at error level so the rare case is diagnosable.
+
+			// Persist the SENT marker with a bounded immediate retry. The
+			// mail is already accepted by Emails::send_email() at this
+			// point. We deliberately do NOT mark-before-send: for a
+			// card-expiry warning a rare over-send is far less harmful than
+			// a silent miss (no warning → failed renewal → involuntary
+			// churn), so over-send is the correct failure direction. Most
+			// save() failures are transient (a momentary lock or DB blip),
+			// so retrying shrinks the window where the marker is missing —
+			// which would otherwise let a later pass re-send — to almost
+			// nothing, with no new durable state. The full two-phase fix
+			// (pending-claim → send → confirm, with stale claims surfaced
+			// for reconciliation) is left as a follow-up.
+			$save = self::save_subscription_with_retry( $subscription );
+			if ( ! $save['saved'] ) {
+				// Still report success so the caller counts this against the
+				// per-pass cap — otherwise a save failure would let the cap
+				// be bypassed AND re-attempt the same address. The marker
+				// not landing means a later pass could re-send; logged at
+				// error level so the rare case is diagnosable.
 				Logger::log(
 					sprintf(
-						'Card expiry warning sent for subscription %d but persisting the SENT marker failed: %s. The warning may re-send on a later pass.',
+						'Card expiry warning sent for subscription %d but persisting the SENT marker failed after %d attempts: %s. The warning may re-send on a later pass.',
 						$subscription->get_id(),
-						$e->getMessage()
+						self::SENT_MARKER_SAVE_ATTEMPTS,
+						$save['last_error']
 					),
 					'NEWSPACK-CARD-EXPIRY',
 					'error'
@@ -720,6 +740,38 @@ class Card_Expiry_Warning {
 			}
 		}
 		return (bool) $sent;
+	}
+
+	/**
+	 * Persist a subscription with a bounded immediate retry, swallowing
+	 * throwables. Used after a successful send to land the SENT marker:
+	 * the mail is already accepted, so a transient save() failure (a
+	 * momentary lock, a DB blip) is worth retrying immediately to narrow
+	 * the window where the marker is missing — which would otherwise let
+	 * a later pass re-send. Bounded by SENT_MARKER_SAVE_ATTEMPTS; never
+	 * throws.
+	 *
+	 * @param \WC_Subscription|object $subscription Subscription to save.
+	 * @return array{saved: bool, last_error: string} Whether the save
+	 *               landed, and the last error message if it didn't.
+	 */
+	private static function save_subscription_with_retry( $subscription ): array {
+		$last_error = '';
+		for ( $attempt = 1; $attempt <= self::SENT_MARKER_SAVE_ATTEMPTS; $attempt++ ) {
+			try {
+				$subscription->save();
+				return [
+					'saved'      => true,
+					'last_error' => '',
+				];
+			} catch ( \Throwable $e ) {
+				$last_error = $e->getMessage();
+			}
+		}
+		return [
+			'saved'      => false,
+			'last_error' => $last_error,
+		];
 	}
 
 	/**

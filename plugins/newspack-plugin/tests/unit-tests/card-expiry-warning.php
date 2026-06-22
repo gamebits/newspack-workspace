@@ -683,4 +683,105 @@ class Newspack_Test_Card_Expiry_Warning extends WP_UnitTestCase {
 			'Post-promote state: SEEDED meta must be absent (invariant: at most one of {SEEDED, SENT}).'
 		);
 	}
+
+	// --------------------------------------------------------------------
+	// SENT-marker persistence retry (NPPD-1524, reopened idempotency
+	// thread). After a successful send the marker save is retried a
+	// bounded number of times to ride out a transient failure, narrowing
+	// the window where a later pass could re-send. We deliberately do NOT
+	// mark-before-send (over-send beats a missed expiry warning); the
+	// durable two-phase fix is tracked as a follow-up.
+	// --------------------------------------------------------------------
+
+	/**
+	 * Helper: invoke the private `save_subscription_with_retry` helper.
+	 *
+	 * @param object $subscription Subscription stub.
+	 * @return array{saved: bool, last_error: string}
+	 */
+	private function invoke_save_with_retry( $subscription ): array {
+		$reflection = new ReflectionMethod( Card_Expiry_Warning::class, 'save_subscription_with_retry' );
+		$reflection->setAccessible( true );
+		return $reflection->invoke( null, $subscription );
+	}
+
+	/**
+	 * Helper: a subscription stub whose save() throws the first
+	 * $throw_times calls, then succeeds. Counts invocations so tests can
+	 * assert the retry actually re-attempted.
+	 *
+	 * @param int $throw_times How many leading save() calls should throw.
+	 * @return object
+	 */
+	private function make_flaky_save_stub( int $throw_times ) {
+		return new class( $throw_times ) {
+			/**
+			 * Remaining throws.
+			 *
+			 * @var int
+			 */
+			public $remaining_throws;
+			/**
+			 * Total save() calls.
+			 *
+			 * @var int
+			 */
+			public $save_calls = 0;
+			/**
+			 * Constructor.
+			 *
+			 * @param int $throw_times Leading throws.
+			 */
+			public function __construct( int $throw_times ) {
+				$this->remaining_throws = $throw_times;
+			}
+			/**
+			 * Save, throwing for the first N calls.
+			 *
+			 * @return bool
+			 * @throws \RuntimeException When a leading throw is still due.
+			 */
+			public function save() {
+				++$this->save_calls;
+				if ( $this->remaining_throws > 0 ) {
+					--$this->remaining_throws;
+					throw new \RuntimeException( 'transient save failure' );
+				}
+				return true;
+			}
+		};
+	}
+
+	/**
+	 * A transient save() failure is ridden out by the bounded retry:
+	 * save throws twice then succeeds (within the 3-attempt budget), so
+	 * the marker persists and `saved` is true.
+	 */
+	public function test_save_marker_retry_succeeds_after_transient_failures() {
+		$stub   = $this->make_flaky_save_stub( 2 );
+		$result = $this->invoke_save_with_retry( $stub );
+
+		$this->assertTrue( $result['saved'], 'Save must succeed once a transient failure clears within the retry budget.' );
+		$this->assertSame( 3, $stub->save_calls, 'save() must be retried (2 throws + 1 success).' );
+	}
+
+	/**
+	 * A persistent save() failure exhausts the retry budget: `saved` is
+	 * false and the last error is surfaced for logging. The caller still
+	 * counts the send against the per-pass cap (asserted via the bool
+	 * contract here — the give-up path returns the error, not an
+	 * exception, so maybe_send_warning never throws).
+	 */
+	public function test_save_marker_retry_gives_up_after_max_attempts() {
+		$stub   = $this->make_flaky_save_stub( PHP_INT_MAX );
+		$result = $this->invoke_save_with_retry( $stub );
+
+		$this->assertFalse( $result['saved'], 'Save must report failure after exhausting the retry budget.' );
+		$this->assertSame(
+			Card_Expiry_Warning::SENT_MARKER_SAVE_ATTEMPTS,
+			$stub->save_calls,
+			'save() must be attempted exactly SENT_MARKER_SAVE_ATTEMPTS times before giving up.'
+		);
+		$this->assertNotSame( '', $result['last_error'], 'The last error message must be captured for the log.' );
+	}
 }
