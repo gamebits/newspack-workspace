@@ -90,7 +90,7 @@ const Emails = () => {
 	// reseed clears window state). Without this, accessing
 	// `.dependencies.newspackNewsletters` on undefined would throw
 	// TypeError at mount and crash the entire route.
-	const emailSettings = window.newspackAudience?.emails ?? { dependencies: {}, postType: '', initial: undefined };
+	const emailSettings = window.newspackAudience?.emails ?? { dependencies: {}, postType: '', initial: undefined, isNewspackPlatform: false };
 	const [ pluginsReady, setPluginsReady ] = useState( Boolean( emailSettings.dependencies?.newspackNewsletters ) );
 
 	// Seed from the SSR bootstrap (class-audience-wizard.php passes the same

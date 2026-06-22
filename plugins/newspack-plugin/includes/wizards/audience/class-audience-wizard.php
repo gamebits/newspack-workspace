@@ -124,12 +124,20 @@ class Audience_Wizard extends Wizard {
 		// SSR-bootstrap the emails tab so DataViews renders on first paint
 		// instead of waiting for the mount-time XHR. Same shape as the API
 		// response so the React seed and the post-fetch state line up.
+		//
+		// `isNewspackPlatform` gates whether the Emails tab is shown at all:
+		// Newspack-managed transactional emails only fire when Newspack is
+		// the reader-revenue platform (WooCommerce orders drive the commerce
+		// emails; RevEngine/NRH redirects checkout off-site and sends its own
+		// receipts, and "Other" sends nothing through Newspack). So Emails is
+		// only relevant — and only manageable — on the Newspack platform.
 		$data['emails'] = [
-			'dependencies' => [
+			'dependencies'       => [
 				'newspackNewsletters' => is_plugin_active( 'newspack-newsletters/newspack-newsletters.php' ),
 			],
-			'postType'     => Emails::POST_TYPE,
-			'initial'      => \Newspack\Wizards\Newspack\Emails_Section::api_get_email_settings(),
+			'postType'           => Emails::POST_TYPE,
+			'initial'            => \Newspack\Wizards\Newspack\Emails_Section::api_get_email_settings(),
+			'isNewspackPlatform' => Donations::is_platform_wc(),
 		];
 
 		wp_enqueue_script( 'newspack-wizards' );

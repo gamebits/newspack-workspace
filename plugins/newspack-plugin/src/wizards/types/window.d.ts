@@ -25,6 +25,7 @@ declare global {
 					newspack_emails: Record< string, unknown >[];
 					post_type: string;
 				};
+				isNewspackPlatform: boolean;
 			};
 		};
 		newspackAudienceCampaigns: {

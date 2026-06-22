@@ -98,9 +98,15 @@ function AudienceWizard( { confirmAction, pluginRequirements, wizardApiFetch }, 
 		fetchConfig();
 	}, [] );
 
+	// Emails is Newspack-platform-only: Newspack-managed transactional
+	// emails only fire when Newspack is the reader-revenue platform. The
+	// server computes this from Donations::is_platform_wc().
+	const showEmails = Boolean( newspackAudience.emails?.isNewspackPlatform );
+
 	const tabs = getSetupTabs( {
 		enabled: config.enabled,
 		hasMemberships: newspackAudience.has_memberships,
+		showEmails,
 	} );
 
 	const getSharedProps = ( configKey, type = 'checkbox' ) => {
@@ -148,7 +154,12 @@ function AudienceWizard( { confirmAction, pluginRequirements, wizardApiFetch }, 
 					<Route path="/" exact render={ () => <Setup { ...props } /> } />
 					<Route path="/content-gating" render={ () => <ContentGating { ...props } /> } />
 					<Route path="/payment" render={ () => <Payment { ...props } /> } />
-					<Route path="/emails" render={ () => <Emails { ...props } className="newspack-wizard__content--full-width" /> } />
+					<Route
+						path="/emails"
+						render={ () =>
+							showEmails ? <Emails { ...props } className="newspack-wizard__content--full-width" /> : <Redirect to="/" />
+						}
+					/>
 					<Route path="/campaign" render={ () => <Campaign { ...props } /> } />
 					<Route path="/complete" render={ () => <Complete { ...props } /> } />
 					<Redirect to="/" />
