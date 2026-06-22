@@ -1024,13 +1024,13 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 	/**
 	 * Emails_Section's wizard_slug is 'newspack-audience' at runtime.
 	 *
-	 * The default property value in the class file is 'newspack-audience'
-	 * too, but Wizard_Section::__construct overrides it from the args
-	 * passed by Wizard::load_wizard_sections — so the assertion below
-	 * checks the actually-registered instance, not just the default.
-	 * A regression where Emails_Section is re-registered under
-	 * Newspack_Settings would set wizard_slug to 'newspack-settings'
-	 * and this test would catch it.
+	 * The class declares `$wizard_slug` UNINITIALIZED by design — there is
+	 * no class-level default. Wizard_Section::__construct assigns it from
+	 * the args passed by Wizard::load_wizard_sections, so the value comes
+	 * solely from the registration site. The assertion below checks the
+	 * actually-registered instance. A regression where Emails_Section is
+	 * re-registered under Newspack_Settings would set wizard_slug to
+	 * 'newspack-settings' and this test would catch it.
 	 */
 	public function test_emails_section_wizard_slug_is_audience() {
 		$audience_wizard = Wizards::get_wizard( 'audience' );
@@ -1052,6 +1052,34 @@ class Newspack_Test_Emails_Section extends WP_UnitTestCase {
 			$wizard_slug_prop->getValue( $emails_section ),
 			'Emails_Section must register under Audience after NPPD-1538.'
 		);
+	}
+
+	/**
+	 * The reset endpoint is served from Emails_Section under the pinned
+	 * emails namespace (ported from NPPD-1535), so the moved Audience UI
+	 * no longer depends on the legacy donations route. Locks the handler's
+	 * source-boundary contract: a non-email id is rejected with
+	 * `newspack_reset_email_invalid_arg` (400). Named distinctly from
+	 * 1535's own reset coverage so the two don't collide at merge.
+	 */
+	public function test_reset_endpoint_ported_rejects_non_email_id() {
+		// A regular post is not a Newspack email — reset must refuse it.
+		$post_id = wp_insert_post(
+			[
+				'post_type'   => 'post',
+				'post_status' => 'publish',
+				'post_title'  => 'Not an email',
+			]
+		);
+
+		$request = new WP_REST_Request( 'DELETE' );
+		$request->set_param( 'id', $post_id );
+		$response = Emails_Section::api_reset_email( $request );
+
+		$this->assertInstanceOf( WP_Error::class, $response, 'Resetting a non-email post must return WP_Error.' );
+		$this->assertSame( 'newspack_reset_email_invalid_arg', $response->get_error_code() );
+		$this->assertSame( 400, $response->get_error_data()['status'] );
+		$this->assertNotSame( 'trash', get_post_status( $post_id ), 'The non-email post must NOT be trashed.' );
 	}
 
 	/**

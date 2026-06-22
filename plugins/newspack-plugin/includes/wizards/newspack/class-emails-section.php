@@ -106,6 +106,29 @@ class Emails_Section extends Wizard_Section {
 			]
 		);
 
+		// Reset endpoint — trashes the email template post so the next
+		// read recreates it from the default template. NPPD-1535 moves this
+		// off the legacy `/wizard/newspack-audience-donations/emails/{id}`
+		// route onto the pinned emails namespace; ported here so the moved
+		// Audience UI calls the pinned route instead of reintroducing the
+		// donations dependency. Self-contained here until 1535 merges.
+		register_rest_route(
+			NEWSPACK_API_NAMESPACE,
+			self::REST_BASE . '/(?P<id>\d+)',
+			[
+				'methods'             => WP_REST_Server::DELETABLE,
+				'callback'            => [ __CLASS__, 'api_reset_email' ],
+				'permission_callback' => [ $this, 'api_permissions_check' ],
+				'args'                => [
+					'id' => [
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
+					],
+				],
+			]
+		);
+
 		// GET — Read the three transactional-email setting values used
 		// by `Emails::get_from_name()`, `get_from_email()`, and
 		// `get_reply_to_email()`. INTENTIONALLY does NOT call
@@ -209,6 +232,54 @@ class Emails_Section extends Wizard_Section {
 				]
 			);
 		}
+	}
+
+	/**
+	 * Reset a Newspack-managed email to its default template.
+	 *
+	 * Trashes the `newspack_rr_email` post so the next read recreates it
+	 * from the bundled default. Ported from NPPD-1535's move of the reset
+	 * endpoint off the donations namespace; the source boundary (only
+	 * POST_TYPE posts, numeric-only id) keeps it Newspack-only.
+	 *
+	 * @param \WP_REST_Request $request REST request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public static function api_reset_email( $request ) {
+		$id    = $request->get_param( 'id' );
+		$email = get_post( $id );
+
+		// Source boundary: this route can only ever reset Newspack-managed
+		// emails. WooCommerce-source rows are live `WC_Email` objects with
+		// `wc:`-prefixed string ids, which can't match the route's
+		// numeric-only `(?P<id>\d+)` pattern, and aren't POST_TYPE posts.
+		if ( null === $email || Emails::POST_TYPE !== $email->post_type ) {
+			return new \WP_Error(
+				'newspack_reset_email_invalid_arg',
+				esc_html__( 'Invalid argument: no email template matches the provided id.', 'newspack-plugin' ),
+				[
+					'status' => 400,
+					'level'  => 'notice',
+				]
+			);
+		}
+
+		if ( ! wp_trash_post( $id ) ) {
+			return new \WP_Error(
+				'newspack_reset_email_reset_failed',
+				esc_html__( 'Reset failed: unable to reset email template.', 'newspack-plugin' ),
+				[
+					'status' => 400,
+					'level'  => 'notice',
+				]
+			);
+		}
+
+		// Returns the raw Emails::get_emails() array, preserving the legacy
+		// donations-endpoint contract (callers depend on the raw shape).
+		return rest_ensure_response(
+			Emails::get_emails( Reader_Activation::is_enabled() ? [] : array_values( Reader_Revenue_Emails::EMAIL_TYPES ), false )
+		);
 	}
 
 	/**
