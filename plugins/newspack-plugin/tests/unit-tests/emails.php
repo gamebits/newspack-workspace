@@ -39,6 +39,82 @@ class Newspack_Test_Emails extends WP_UnitTestCase {
 	public function tear_down() {
 		reset_phpmailer_instance();
 		Emails::reset_email_configs_cache();
+		delete_option( \Newspack\Reader_Activation::OPTIONS_PREFIX . 'sender_name' );
+		delete_option( \Newspack\Reader_Activation::OPTIONS_PREFIX . 'sender_email_address' );
+		delete_option( \Newspack\Reader_Activation::OPTIONS_PREFIX . 'contact_email_address' );
+	}
+
+	/**
+	 * NPPD-1566: the saved sender/contact overrides are honored by the
+	 * send path REGARDLESS of Reader Activation state. Reader Activation
+	 * is disabled in the test environment by default, so these assertions
+	 * exercise exactly the previously-broken path: a publisher saves the
+	 * settings via the Emails modal with RA off, and the send path must
+	 * use them instead of silently falling back to derived defaults.
+	 */
+	public function test_sender_settings_honored_regardless_of_reader_activation() {
+		$prefix = \Newspack\Reader_Activation::OPTIONS_PREFIX;
+		update_option( $prefix . 'sender_name', 'Custom Sender' );
+		update_option( $prefix . 'sender_email_address', 'sender@example.com' );
+		update_option( $prefix . 'contact_email_address', 'contact@example.com' );
+
+		self::assertSame( 'Custom Sender', Emails::get_from_name(), 'Saved sender_name must be honored with RA off.' );
+		self::assertSame( 'sender@example.com', Emails::get_from_email(), 'Saved sender_email must be honored with RA off.' );
+		self::assertSame( 'contact@example.com', Emails::get_reply_to_email(), 'Saved contact_email must be honored with RA off.' );
+	}
+
+	/**
+	 * An empty (or absent) saved value is the revert-to-default signal:
+	 * the send path falls back to the derived default rather than sending
+	 * with a blank sender.
+	 */
+	public function test_sender_settings_fall_back_to_defaults_when_empty() {
+		$prefix = \Newspack\Reader_Activation::OPTIONS_PREFIX;
+		update_option( $prefix . 'sender_name', '' );
+		delete_option( $prefix . 'sender_email_address' );
+
+		self::assertSame( get_bloginfo( 'name' ), Emails::get_from_name(), 'Empty sender_name must fall back to the site title.' );
+		self::assertStringStartsWith( 'no-reply@', Emails::get_from_email(), 'Absent sender_email must fall back to the derived no-reply default.' );
+	}
+
+	/**
+	 * NPPD-1575: the option-layer guard (registered via register_setting)
+	 * validates the email keys for EVERY writer — including a direct
+	 * update_option() that bypasses the Emails route's inline is_email().
+	 * A valid address is stored; a malformed one is coerced to the
+	 * last-good stored value (never wiping a good address); empty is the
+	 * revert signal and is preserved.
+	 */
+	public function test_email_option_sanitization_applies_to_any_writer() {
+		Emails::register_sender_settings(); // Ensure the sanitize filters are attached.
+		$option = \Newspack\Reader_Activation::OPTIONS_PREFIX . 'sender_email_address';
+
+		// Valid address is stored (sanitized).
+		update_option( $option, 'good@example.com' );
+		self::assertSame( 'good@example.com', get_option( $option ), 'Valid address must persist.' );
+
+		// Malformed non-empty write (bypassing the route guard) is coerced
+		// to the last-good stored value, not allowed to wipe it.
+		update_option( $option, 'not-an-email' );
+		self::assertSame( 'good@example.com', get_option( $option ), 'Invalid address must coerce to last-good, not overwrite it.' );
+
+		// Empty is the revert-to-default signal and is preserved.
+		update_option( $option, '' );
+		self::assertSame( '', get_option( $option ), 'Empty must be preserved as the revert signal.' );
+	}
+
+	/**
+	 * The sender_name option strips CR/LF via sanitize_text_field at the
+	 * option layer, so a From:-header injection attempt can't be stored
+	 * even by a writer that skips the route.
+	 */
+	public function test_sender_name_option_strips_newlines() {
+		Emails::register_sender_settings();
+		$option = \Newspack\Reader_Activation::OPTIONS_PREFIX . 'sender_name';
+
+		update_option( $option, "Evil\r\nBcc: victim@example.com" );
+		self::assertStringNotContainsString( "\r", get_option( $option ), 'CR must be stripped from sender_name.' );
+		self::assertStringNotContainsString( "\n", get_option( $option ), 'LF must be stripped from sender_name.' );
 	}
 
 	/**

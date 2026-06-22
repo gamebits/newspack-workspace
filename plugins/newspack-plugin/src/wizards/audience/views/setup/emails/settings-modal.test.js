@@ -443,4 +443,29 @@ describe( 'SettingsModal', () => {
 		fireEvent.change( screen.getByLabelText( 'Sender Name' ), { target: { value: 'Typed After Failure' } } );
 		expect( screen.getByRole( 'button', { name: 'Save' } ) ).toBeDisabled();
 	} );
+
+	// NPPD-1566: site titles / admin emails can carry encoded HTML
+	// entities (e.g. an ampersand as `&amp;`). Both the saved values and
+	// the derived-default placeholders must render decoded.
+	it( 'decodes HTML entities in saved values and default placeholders', async () => {
+		setUpFetchMock( {
+			sender_name: 'Tom &amp; Jerry News',
+			sender_email_address: 'hello@example.com',
+			contact_email_address: 'support@example.com',
+			defaults: {
+				sender_name: 'Smith &amp; Co.',
+				sender_email_address: 'no-reply@example.com',
+				contact_email_address: 'admin@example.com',
+			},
+		} );
+		const SettingsModal = require( './settings-modal' ).default;
+		render( <SettingsModal showModal={ true } closeModal={ jest.fn() } /> );
+
+		await waitFor( () => {
+			// Saved value rendered decoded in the input.
+			expect( screen.getByLabelText( 'Sender Name' ).value ).toBe( 'Tom & Jerry News' );
+		} );
+		// Derived default rendered decoded in the placeholder.
+		expect( screen.getByLabelText( 'Sender Name' ) ).toHaveAttribute( 'placeholder', 'Smith & Co.' );
+	} );
 } );
