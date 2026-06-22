@@ -20,6 +20,7 @@ import {
 	__experimentalVStack as VStack, // eslint-disable-line @wordpress/no-unsafe-wp-apis
 } from '@wordpress/components';
 import { useDispatch } from '@wordpress/data';
+import { decodeEntities } from '@wordpress/html-entities';
 
 /**
  * Internal dependencies.
@@ -49,6 +50,18 @@ const EMPTY_SETTINGS: TransactionalEmailSettings = {
 	sender_email_address: '',
 	contact_email_address: '',
 };
+
+// Decode HTML entities for display. Derived defaults come from
+// get_bloginfo( 'name' ) / the admin email, which can carry encoded
+// entities (e.g. an ampersand as `&amp;`); saved values can too. Decode
+// at the data boundary so the inputs show "Tom & Jerry" not
+// "Tom &amp; Jerry". sender_name re-saves through sanitize_text_field,
+// which does not re-encode, so the round-trip is stable.
+const decodeSettings = ( values: TransactionalEmailSettings ): TransactionalEmailSettings => ( {
+	sender_name: decodeEntities( values.sender_name ),
+	sender_email_address: decodeEntities( values.sender_email_address ),
+	contact_email_address: decodeEntities( values.contact_email_address ),
+} );
 
 // Mirrors the server-side `is_email()` gate: any string with an `@`, a
 // dot in the domain, and no embedded whitespace. Used to disable Save
@@ -95,14 +108,14 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 			},
 			{
 				onSuccess( result: TransactionalEmailSettingsResponse ) {
-					const values: TransactionalEmailSettings = {
+					const values = decodeSettings( {
 						sender_name: result.sender_name,
 						sender_email_address: result.sender_email_address,
 						contact_email_address: result.contact_email_address,
-					};
+					} );
 					setSettings( values );
 					setInitial( values );
-					setDefaults( result.defaults );
+					setDefaults( decodeSettings( result.defaults ) );
 					setLoaded( true );
 				},
 				onError() {
@@ -157,14 +170,14 @@ const SettingsModal = ( { showModal, closeModal }: { showModal: boolean; closeMo
 					// reflects post-sanitization values exactly — and so
 					// fields that were just cleared flip back to their
 					// derived-default placeholder presentation.
-					const values: TransactionalEmailSettings = {
+					const values = decodeSettings( {
 						sender_name: result.sender_name,
 						sender_email_address: result.sender_email_address,
 						contact_email_address: result.contact_email_address,
-					};
+					} );
 					setInitial( values );
 					setSettings( values );
-					setDefaults( result.defaults );
+					setDefaults( decodeSettings( result.defaults ) );
 					addNotice( {
 						message: __( 'Saved.', 'newspack-plugin' ),
 						type: 'success',

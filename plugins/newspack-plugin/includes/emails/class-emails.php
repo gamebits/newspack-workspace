@@ -43,6 +43,7 @@ class Emails {
 	public static function init() {
 		add_action( 'init', [ __CLASS__, 'register_cpt' ] );
 		add_action( 'init', [ __CLASS__, 'register_meta' ] );
+		add_action( 'init', [ __CLASS__, 'register_sender_settings' ] );
 		add_action( 'rest_api_init', [ __CLASS__, 'register_api_endpoints' ] );
 		add_action( 'enqueue_block_editor_assets', [ __CLASS__, 'enqueue_block_editor_assets' ] );
 		add_filter( 'newspack_newsletters_email_editor_cpts', [ __CLASS__, 'register_email_cpt_with_email_editor' ] );
@@ -575,9 +576,7 @@ class Emails {
 			}
 			$from_email .= $sitename;
 		}
-		if ( Reader_Activation::is_enabled() ) {
-			$from_email = get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_email_address', $from_email );
-		}
+		$from_email = self::saved_sender_setting_or_default( 'sender_email_address', $from_email );
 		return apply_filters( 'newspack_from_email', $from_email );
 	}
 
@@ -588,9 +587,7 @@ class Emails {
 	 */
 	public static function get_reply_to_email() {
 		$reply_to_email = get_bloginfo( 'admin_email' );
-		if ( Reader_Activation::is_enabled() ) {
-			$reply_to_email = get_option( Reader_Activation::OPTIONS_PREFIX . 'contact_email_address', $reply_to_email );
-		}
+		$reply_to_email = self::saved_sender_setting_or_default( 'contact_email_address', $reply_to_email );
 		return apply_filters( 'newspack_reply_to_email', $reply_to_email );
 	}
 
@@ -603,10 +600,132 @@ class Emails {
 	 */
 	public static function get_from_name() {
 		$from_name = get_bloginfo( 'name' );
-		if ( Reader_Activation::is_enabled() ) {
-			$from_name = get_option( Reader_Activation::OPTIONS_PREFIX . 'sender_name', $from_name );
-		}
+		$from_name = self::saved_sender_setting_or_default( 'sender_name', $from_name );
 		return apply_filters( 'newspack_from_name', $from_name );
+	}
+
+	/**
+	 * Resolve a saved transactional-email sender/contact setting,
+	 * falling back to a derived default when unset or empty.
+	 *
+	 * The saved override is honored REGARDLESS of Reader Activation
+	 * state. The Emails > Settings modal surfaces and writes these
+	 * settings whether or not RA is enabled, so silently ignoring a
+	 * saved value when RA is off (the previous behavior) would discard
+	 * an explicit publisher choice and send with the derived default.
+	 * RA visibility rules are kept separate from sender resolution.
+	 *
+	 * An empty stored value means "use the derived default" — this is
+	 * the modal's revert-to-default signal — so empty never overrides.
+	 *
+	 * @param string $key     Option key suffix (e.g. 'sender_name'),
+	 *                        appended to Reader_Activation::OPTIONS_PREFIX.
+	 * @param string $default Derived default to use when unset/empty.
+	 * @return string Saved value when non-empty, otherwise $default.
+	 */
+	private static function saved_sender_setting_or_default( $key, $default ) {
+		$saved = get_option( Reader_Activation::OPTIONS_PREFIX . $key, '' );
+		if ( is_string( $saved ) && '' !== $saved ) {
+			return $saved;
+		}
+		return $default;
+	}
+
+	/**
+	 * Register option-layer sanitization for the three transactional
+	 * sender/contact settings, so EVERY writer inherits the same guard:
+	 * the Emails > Settings route, the legacy Audience-Management route,
+	 * and any future REST/cron writer. `register_setting()` attaches a
+	 * `sanitize_option_{$option}` filter that `update_option()` always
+	 * runs, so route-level validation can't be bypassed at the option.
+	 *
+	 * Hooked on `init` (not `admin_init`) so the guard is attached on
+	 * every request type — a cron or REST write must not slip past an
+	 * admin-only filter.
+	 *
+	 * The route keeps its own inline `is_email()` for a friendly inline
+	 * error; this is the integrity backstop beneath it.
+	 *
+	 * @return void
+	 */
+	public static function register_sender_settings() {
+		// sender_name flows into the mail `From:` header.
+		// sanitize_text_field strips CR/LF — load-bearing header-injection
+		// defense. Empty is preserved (the revert-to-default signal).
+		register_setting(
+			'newspack_emails',
+			Reader_Activation::OPTIONS_PREFIX . 'sender_name',
+			[
+				'type'              => 'string',
+				'sanitize_callback' => 'sanitize_text_field',
+			]
+		);
+		// register_setting's sanitize_callback receives only $value (it
+		// adds the filter with accepted_args = 1), so each email option
+		// gets a dedicated callback that knows its own key — needed to
+		// look up the last-good stored value on the invalid-coerce path.
+		register_setting(
+			'newspack_emails',
+			Reader_Activation::OPTIONS_PREFIX . 'sender_email_address',
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ __CLASS__, 'sanitize_sender_email_address_option' ],
+			]
+		);
+		register_setting(
+			'newspack_emails',
+			Reader_Activation::OPTIONS_PREFIX . 'contact_email_address',
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ __CLASS__, 'sanitize_contact_email_address_option' ],
+			]
+		);
+	}
+
+	/**
+	 * Option-layer sanitizer for the sender email address.
+	 *
+	 * @param mixed $value Incoming option value.
+	 * @return string Sanitized value.
+	 */
+	public static function sanitize_sender_email_address_option( $value ) {
+		return self::sanitize_email_setting( $value, Reader_Activation::OPTIONS_PREFIX . 'sender_email_address' );
+	}
+
+	/**
+	 * Option-layer sanitizer for the contact (reply-to) email address.
+	 *
+	 * @param mixed $value Incoming option value.
+	 * @return string Sanitized value.
+	 */
+	public static function sanitize_contact_email_address_option( $value ) {
+		return self::sanitize_email_setting( $value, Reader_Activation::OPTIONS_PREFIX . 'contact_email_address' );
+	}
+
+	/**
+	 * Shared email-setting sanitizer. Empty is never blocked or coerced
+	 * — it is the revert-to-derived-default signal. A non-empty value
+	 * that fails `is_email()` (e.g. a legacy/cron writer bypassing the
+	 * route's guard) is coerced to the LAST-GOOD stored value rather
+	 * than to empty, so an invalid write can't silently wipe a good
+	 * saved address down to the derived default.
+	 *
+	 * @param mixed  $value  Incoming option value.
+	 * @param string $option Full option name (to read the prior value).
+	 * @return string Sanitized value.
+	 */
+	private static function sanitize_email_setting( $value, $option ) {
+		if ( ! is_string( $value ) || '' === $value ) {
+			return '';
+		}
+		if ( is_email( $value ) ) {
+			return sanitize_email( $value );
+		}
+		$existing = get_option( $option, '' );
+		if ( is_string( $existing ) && '' !== $existing ) {
+			return $existing;
+		}
+		return '';
 	}
 
 	/**
