@@ -788,10 +788,11 @@ describe( 'Emails', () => {
 		expect( heading ).toHaveClass( 'screen-reader-text' );
 	} );
 
-	it( 'shows only the Authentication & account chip on a non-Newspack platform', async () => {
+	it( 'hides the chip bar entirely on a non-Newspack platform', async () => {
 		// NPPD-1538: on RevEngine/Other the server returns only auth/account
-		// emails, so the chip bar collapses to a single group and defaults to
-		// it — the Reader revenue chip is not rendered at all.
+		// emails, so there's a single group — the chip bar is hidden rather
+		// than showing a lone, always-pressed (non-functional) chip. Settings
+		// stays available; the list renders unfiltered.
 		window.newspackAudience.emails.isNewspackPlatform = false;
 		const Emails = require( './emails' ).default;
 		render( <Emails /> );
@@ -801,7 +802,8 @@ describe( 'Emails', () => {
 		} );
 
 		expect( screen.queryByRole( 'button', { name: 'Reader revenue' } ) ).not.toBeInTheDocument();
-		const authChip = screen.getByRole( 'button', { name: 'Authentication & account' } );
-		expect( authChip.getAttribute( 'aria-pressed' ) ).toBe( 'true' );
+		expect( screen.queryByRole( 'button', { name: 'Authentication & account' } ) ).not.toBeInTheDocument();
+		// Settings button remains.
+		expect( screen.getByRole( 'button', { name: 'Settings' } ) ).toBeInTheDocument();
 	} );
 } );

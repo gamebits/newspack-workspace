@@ -19,9 +19,10 @@ import { __ } from '@wordpress/i18n';
  * @param {Object}  options                Tab options.
  * @param {boolean} options.enabled        Whether Audience management is enabled (Configuration vs Setup label).
  * @param {boolean} options.hasMemberships Whether memberships are active (gates the Access Control tab).
+ * @param {boolean} options.showEmails     Whether to show the Emails tab (RA enabled OR Newspack platform).
  * @return {Array<{label: string, path: string}>} The ordered, filtered tab list.
  */
-export const getSetupTabs = ( { enabled, hasMemberships } ) =>
+export const getSetupTabs = ( { enabled, hasMemberships, showEmails } ) =>
 	[
 		{
 			label: enabled ? __( 'Configuration', 'newspack-plugin' ) : __( 'Setup', 'newspack-plugin' ),
@@ -36,10 +37,11 @@ export const getSetupTabs = ( { enabled, hasMemberships } ) =>
 				label: __( 'Access Control', 'newspack-plugin' ),
 				path: '/content-gating',
 			},
-		// Emails is always available. The email LIST is scoped by platform
-		// server-side (reader-revenue emails only on the Newspack platform;
-		// auth/account emails everywhere) — see Emails_Section.
-		{
+		// Emails shows when there are Newspack-sent emails to manage: auth/
+		// account emails need Reader Activation; commerce emails fire on the
+		// Newspack platform even with RA off. Hidden only when neither holds.
+		// The LIST is further scoped by platform server-side (see Emails_Section).
+		showEmails && {
 			label: __( 'Emails', 'newspack-plugin' ),
 			path: '/emails',
 		},
