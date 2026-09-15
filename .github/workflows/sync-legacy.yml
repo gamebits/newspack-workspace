@@ -28,6 +28,9 @@ name: Sync legacy repos
 #
 # Manual trigger via workflow_dispatch is available for the day of cutover
 # and whenever someone wants fresh legacy commits reflected immediately.
+#
+# The sync job runs only on Automattic/newspack-workspace. On forks the cron
+# still fires, but a no-op job succeeds instead of failing checkout.
 
 on:
   schedule:
@@ -43,8 +46,24 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Forks inherit this cron but cannot run it: they lack GH_TOKEN (matticbot
+  # PAT) and LEGACY_SYNC_GH_TOKEN, so checkout fails with "Input required and
+  # not supplied: token". Succeed here instead of failing the daily run. To
+  # stop the scheduled runs entirely, disable this workflow under Actions.
+  skip-on-fork:
+    name: No-op on forks
+    if: github.repository != 'Automattic/newspack-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip Automattic-only sync
+        run: |
+          echo "Sync legacy repos only runs on Automattic/newspack-workspace."
+          echo "This scheduled job is a no-op on forks (no GH_TOKEN / matticbot PAT)."
+          echo "To stop these daily runs: Actions → Sync legacy repos → Disable workflow."
+
   sync:
     name: Filter, publish, and integrate
+    if: github.repository == 'Automattic/newspack-workspace'
     runs-on: ubuntu-latest
     steps:
       # Sync scripts and the working tree are both main now. Two checkouts keep
